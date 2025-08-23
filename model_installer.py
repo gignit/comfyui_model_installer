@@ -8,6 +8,7 @@ from typing import Callable, Any, Dict, Optional
 import asyncio
 import aiohttp
 import json
+import re
 from pathlib import Path
 
 import folder_paths
@@ -61,7 +62,6 @@ class ModelInstaller:
         # Workflow validation system
         self._workflow_index: Optional[Dict] = None
         self._index_file = Path(__file__).parent / "workflow_model_index.json"
-        self._templates_dir = Path(__file__).parent.parent / "custom_workflow_templates"
 
     async def expected_size(self, url: str) -> int:
         """Get expected file size for a URL."""
@@ -278,74 +278,80 @@ class ModelInstaller:
             return False
 
         try:
-            index_mtime = self._index_file.stat().st_mtime
-
-            # Check if any workflow file is newer than index
-            if self._templates_dir.exists():
-                for json_file in self._templates_dir.glob("*.json"):
-                    if json_file.name == "index.json":
-                        continue
-                    if json_file.stat().st_mtime > index_mtime:
-                        logging.debug(f"[Model Installer] Workflow {json_file} is newer than index")
-                        return False  # Index is stale
-
-            return True  # Index is current
+            # For now, always refresh since we're using the module
+            # In the future, we could check module version or timestamp
+            return False  # Always refresh for now
 
         except Exception as e:
             logging.warning(f"[Model Installer] Error checking workflow index: {e}")
             return False  # Refresh on error
 
     def _create_workflow_index(self) -> Dict:
-        """Create new workflow index from all workflow files."""
+        """Create new workflow index from comfyui_workflow_templates module."""
         index = {}
 
-        if not self._templates_dir.exists():
-            logging.debug(f"[Model Installer] Templates directory does not exist: {self._templates_dir}")
-            return index
-
-        logging.info(f"[Model Installer] Scanning workflow templates in: {self._templates_dir}")
-
-        for json_file in self._templates_dir.glob("*.json"):
-            if json_file.name == "index.json":
-                continue
-
-            try:
-                with open(json_file, 'r', encoding='utf-8') as f:
-                    workflow = json.load(f)
-
-                # Extract models from all nodes
-                nodes = workflow.get("nodes", [])
-                if isinstance(nodes, dict):
-                    # Handle both array and object formats
-                    nodes = nodes.values()
-
-                models_found = 0
-                for node in nodes:
-                    if not isinstance(node, dict):
-                        continue
-
-                    models = node.get("properties", {}).get("models", [])
-                    for model in models:
-                        if not isinstance(model, dict):
-                            continue
-
-                        name = model.get("name")
-                        directory = model.get("directory")
-                        url = model.get("url")
-
-                        if name and directory and url:
-                            key = f"{directory}/{name}"
+        try:
+            import comfyui_workflow_templates
+            import importlib.resources
+            
+            logging.info("[Model Installer] Loading workflow templates from comfyui_workflow_templates module")
+            
+            # Get templates directory from module
+            templates_path = importlib.resources.files(comfyui_workflow_templates) / 'templates'
+            
+            json_files = [f for f in templates_path.iterdir() if f.name.endswith('.json') and f.name != 'index.json']
+            logging.info(f"[Model Installer] Found {len(json_files)} workflow template files")
+            
+            for json_file in json_files:
+                try:
+                    content = json_file.read_text(encoding='utf-8')
+                    
+                    # Extract model URLs and filenames using regex
+                    # Look for Hugging Face URLs with .safetensors files
+                    hf_pattern = r'https://huggingface\.co/[^/]+/[^/]+/resolve/[^/]+/([^/]+)/([^?\s"]+\.safetensors)'
+                    matches = re.findall(hf_pattern, content)
+                    
+                    models_found = 0
+                    for directory, filename in matches:
+                        # Map directory names to ComfyUI folder names
+                        directory_mapping = {
+                            'vae': 'vae',
+                            'checkpoints': 'checkpoints', 
+                            'diffusion_models': 'diffusion_models',
+                            'text_encoders': 'text_encoders',
+                            'clip_vision': 'clip_vision',
+                            'loras': 'loras',
+                            'controlnet': 'controlnet',
+                            'upscale_models': 'upscale_models'
+                        }
+                        
+                        mapped_dir = directory_mapping.get(directory, directory)
+                        key = f"{mapped_dir}/{filename}"
+                        
+                        # Find the full URL for this model
+                        url_pattern = rf'https://huggingface\.co/[^/]+/[^/]+/resolve/[^/]+/{re.escape(directory)}/{re.escape(filename)}[^?\s"]*'
+                        url_matches = re.findall(url_pattern, content)
+                        
+                        if url_matches:
+                            url = url_matches[0]
                             if key not in index:
                                 index[key] = {"urls": set(), "workflows": set()}
                             index[key]["urls"].add(url)
                             index[key]["workflows"].add(json_file.name)
                             models_found += 1
-
-                if models_found > 0:
-                    logging.debug(f"[Model Installer] Found {models_found} models in {json_file.name}")
-
-            except Exception as e:
-                logging.warning(f"[Model Installer] Failed to parse workflow {json_file}: {e}")
+                    
+                    if models_found > 0:
+                        logging.debug(f"[Model Installer] Found {models_found} models in {json_file.name}")
+                        
+                except Exception as e:
+                    logging.warning(f"[Model Installer] Failed to parse workflow {json_file.name}: {e}")
+            
+        except ImportError:
+            logging.warning("[Model Installer] comfyui_workflow_templates module not available")
+            return {}
+        except Exception as e:
+            logging.error(f"[Model Installer] Error loading workflow templates: {e}")
+            return {}
 
         # Convert sets to lists for JSON serialization
         serializable_index = {}
