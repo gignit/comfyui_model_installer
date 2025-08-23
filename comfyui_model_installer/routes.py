@@ -216,3 +216,11 @@ def register_routes():
             return web.json_response({"error": str(e)}, status=500)
 
     logging.info("[Model Installer] Routes registered successfully")
+
+
+def try_register_routes():
+    """Safely try to register routes if running inside ComfyUI."""
+    try:
+        register_routes()
+    except Exception as e:
+        logging.warning(f"[Model Installer] Route registration skipped: {e}")

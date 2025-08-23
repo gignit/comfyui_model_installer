@@ -15,10 +15,16 @@ Homepage = "https://github.com/gignit/comfyui_model_installer"
 Repository = "https://github.com/gignit/comfyui_model_installer"
 Issues = "https://github.com/gignit/comfyui_model_installer/issues"
 
+[tool.comfy]
+PublisherId = "gignit"
+NodeId = "comfyui_model_installer"
+DisplayName = "Model Installer"
+Icon = "https://raw.githubusercontent.com/gignit/comfyui_model_installer/main/icon.png"
+
 [build-system]
 requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["*"]
+include = ["comfyui_model_installer"]
