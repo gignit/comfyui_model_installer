@@ -318,14 +318,47 @@ class ModelInstaller:
             for json_file in json_files:
                 try:
                     content = json_file.read_text(encoding='utf-8')
+                    workflow_data = json.loads(content)
                     
-                    # Extract model URLs and filenames using regex
-                    # Look for Hugging Face URLs with .safetensors files
-                    # Pattern captures the full path after resolve/main/
+                    models_found = 0
+                    
+                    # Method 1: Parse structured model metadata from properties.models arrays
+                    def extract_models_from_node(node_data):
+                        nonlocal models_found
+                        if isinstance(node_data, dict):
+                            # Check if this node has properties.models
+                            if "properties" in node_data and isinstance(node_data["properties"], dict):
+                                if "models" in node_data["properties"] and isinstance(node_data["properties"]["models"], list):
+                                    for model in node_data["properties"]["models"]:
+                                        if isinstance(model, dict) and "name" in model and "url" in model and "directory" in model:
+                                            filename = model["name"]
+                                            url = model["url"]
+                                            directory = model["directory"]
+                                            
+                                            key = f"{directory}/{filename}"
+                                            if key not in index:
+                                                index[key] = {"urls": set(), "workflows": set()}
+                                            index[key]["urls"].add(url)
+                                            index[key]["workflows"].add(json_file.name)
+                                            models_found += 1
+                                            logging.debug(f"[Model Installer] Found structured model: {key} -> {url}")
+                            
+                            # Recursively check all nested objects
+                            for value in node_data.values():
+                                if isinstance(value, (dict, list)):
+                                    extract_models_from_node(value)
+                        elif isinstance(node_data, list):
+                            for item in node_data:
+                                extract_models_from_node(item)
+                    
+                    # Extract from structured data
+                    extract_models_from_node(workflow_data)
+                    
+                    # Method 2: Fallback regex extraction for URLs in markdown/text content
+                    # Look for Hugging Face URLs with .safetensors files in subdirectories
                     hf_pattern = r'https://huggingface\.co/[^/]+/[^/]+/resolve/[^/]+/([^?\s"]+\.safetensors)'
                     matches = re.findall(hf_pattern, content)
                     
-                    models_found = 0
                     for full_path in matches:
                         # Split the path to get directory and filename
                         path_parts = full_path.split('/')
@@ -351,6 +384,10 @@ class ModelInstaller:
                         mapped_dir = directory_mapping.get(directory, directory)
                         key = f"{mapped_dir}/{filename}"
                         
+                        # Skip if we already found this model via structured data
+                        if key in index:
+                            continue
+                        
                         # Find the full URL for this model
                         url_pattern = rf'https://huggingface\.co/[^/]+/[^/]+/resolve/[^/]+/{re.escape(full_path)}[^?\s"]*'
                         url_matches = re.findall(url_pattern, content)
@@ -362,6 +399,7 @@ class ModelInstaller:
                             index[key]["urls"].add(url)
                             index[key]["workflows"].add(json_file.name)
                             models_found += 1
+                            logging.debug(f"[Model Installer] Found regex model: {key} -> {url}")
                     
                     if models_found > 0:
                         logging.debug(f"[Model Installer] Found {models_found} models in {json_file.name}")
