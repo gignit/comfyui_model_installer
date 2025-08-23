@@ -1,0 +1,24 @@
+[project]
+name = "comfyui_model_installer"
+version = "1.0.0"
+description = "Automatic model installer for ComfyUI missing models"
+authors = [{name = "Ryan Wyler", email = "ryan.wyler@icloud.com"}]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "huggingface_hub>=0.16.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/gignit/comfyui_model_installer"
+Repository = "https://github.com/gignit/comfyui_model_installer"
+Issues = "https://github.com/gignit/comfyui_model_installer/issues"
+
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["*"]
