@@ -62,6 +62,7 @@ class ModelInstaller:
         # Workflow validation system
         self._workflow_index: Optional[Dict] = None
         self._index_file = Path(__file__).parent / "workflow_model_index.json"
+        self._index_loaded_this_session = False
 
     async def expected_size(self, url: str) -> int:
         """Get expected file size for a URL."""
@@ -253,11 +254,17 @@ class ModelInstaller:
 
             # Check if URL matches any known URL for this model
             known_urls = set(index[model_key].get("urls", []))
-            if url in known_urls:
+            
+            # Remove query parameters from the request URL for comparison
+            parsed_url = urlparse(url)
+            clean_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+            
+            # Check both the original URL and the clean URL
+            if url in known_urls or clean_url in known_urls:
                 logging.debug(f"[Model Installer] Validated: {model_key} from {url}")
                 return True
             else:
-                logging.warning(f"[Model Installer] URL mismatch for {model_key}. Got: {url}, Expected one of: {known_urls}")
+                logging.warning(f"[Model Installer] URL mismatch for {model_key}. Got: {url} (clean: {clean_url}), Expected one of: {known_urls}")
                 return False
 
         except Exception as e:
@@ -273,18 +280,24 @@ class ModelInstaller:
 
     def _check_workflow_index(self) -> bool:
         """Check if current workflow index is still valid."""
-        if not self._index_file.exists():
-            logging.debug("[Model Installer] Workflow index file does not exist")
-            return False
-
-        try:
-            # For now, always refresh since we're using the module
-            # In the future, we could check module version or timestamp
-            return False  # Always refresh for now
-
-        except Exception as e:
-            logging.warning(f"[Model Installer] Error checking workflow index: {e}")
-            return False  # Refresh on error
+        # If we've already loaded the index this session, use the cached version
+        if self._index_loaded_this_session and self._workflow_index is not None:
+            return True
+            
+        # If index file exists and we haven't loaded it this session, load it
+        if self._index_file.exists():
+            try:
+                with open(self._index_file, 'r', encoding='utf-8') as f:
+                    self._workflow_index = json.load(f)
+                self._index_loaded_this_session = True
+                logging.debug("[Model Installer] Loaded existing workflow index from disk")
+                return True
+            except Exception as e:
+                logging.warning(f"[Model Installer] Error loading existing index: {e}")
+                return False
+        
+        # No index file exists, need to create it
+        return False
 
     def _create_workflow_index(self) -> Dict:
         """Create new workflow index from comfyui_workflow_templates module."""
@@ -308,11 +321,21 @@ class ModelInstaller:
                     
                     # Extract model URLs and filenames using regex
                     # Look for Hugging Face URLs with .safetensors files
-                    hf_pattern = r'https://huggingface\.co/[^/]+/[^/]+/resolve/[^/]+/([^/]+)/([^?\s"]+\.safetensors)'
+                    # Pattern captures the full path after resolve/main/
+                    hf_pattern = r'https://huggingface\.co/[^/]+/[^/]+/resolve/[^/]+/([^?\s"]+\.safetensors)'
                     matches = re.findall(hf_pattern, content)
                     
                     models_found = 0
-                    for directory, filename in matches:
+                    for full_path in matches:
+                        # Split the path to get directory and filename
+                        path_parts = full_path.split('/')
+                        if len(path_parts) < 2:
+                            continue
+                            
+                        filename = path_parts[-1]
+                        # Get the last directory part (the actual model type directory)
+                        directory = path_parts[-2]
+                        
                         # Map directory names to ComfyUI folder names
                         directory_mapping = {
                             'vae': 'vae',
@@ -329,7 +352,7 @@ class ModelInstaller:
                         key = f"{mapped_dir}/{filename}"
                         
                         # Find the full URL for this model
-                        url_pattern = rf'https://huggingface\.co/[^/]+/[^/]+/resolve/[^/]+/{re.escape(directory)}/{re.escape(filename)}[^?\s"]*'
+                        url_pattern = rf'https://huggingface\.co/[^/]+/[^/]+/resolve/[^/]+/{re.escape(full_path)}[^?\s"]*'
                         url_matches = re.findall(url_pattern, content)
                         
                         if url_matches:
@@ -366,6 +389,7 @@ class ModelInstaller:
             with open(self._index_file, 'w', encoding='utf-8') as f:
                 json.dump(serializable_index, f, indent=2)
             logging.info(f"[Model Installer] Saved workflow index with {len(serializable_index)} models to {self._index_file}")
+            self._index_loaded_this_session = True
         except Exception as e:
             logging.warning(f"[Model Installer] Failed to save workflow index: {e}")
 
