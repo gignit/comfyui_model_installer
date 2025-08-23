@@ -4,11 +4,13 @@ Automatically installs missing model files from workflow templates with Install/
 
 ## Features
 
-- **Automatic Installation**: Install missing models directly from the Missing Models dialog
+- **Workflow-Based Security**: Only allows installation of models defined in workflow templates
+- **One-Click Installation**: Install missing models directly from the Missing Models dialog
+- **Smart Directory Detection**: Automatically determines correct installation directories
 - **Progress Tracking**: Real-time download progress with speed, ETA, and completion percentage
 - **Hugging Face Support**: Seamless authentication for gated models
 - **Multiple Sources**: Supports Hugging Face, Civitai, and direct download URLs
-- **Safe Installation**: Validates paths and installs to correct ComfyUI model directories
+- **Safe Installation**: Validates paths and prevents unauthorized downloads
 
 ## Installation
 
@@ -35,8 +37,17 @@ Automatically installs missing model files from workflow templates with Install/
 1. Load a workflow that requires missing models
 2. Open the Missing Models dialog (appears automatically or via menu)
 3. Click the **Install** button next to any missing model
+
+![Missing Models](images/step1-missing-models.png)
+
 4. Watch the progress in the top-right download panel
+
+![Downloading](images/step2-downloading.png)
+
 5. The button changes to **Uninstall** when the model is installed
+
+![Complete](images/step3-complete.png)
+
 
 ### Hugging Face Authentication
 
@@ -86,9 +97,10 @@ Use ComfyUI-Manager to enable or disable this extension:
 
 ## Security
 
-- All downloads are validated and restricted to known model directories
-- Path traversal attacks are prevented with safe path joining
-- Hugging Face tokens are stored using the standard `huggingface_hub` library
+- **Workflow Validation**: Only models defined in workflow templates can be installed
+- **Zero-Trust Model**: Backend validates all requests against cached workflow index
+- **Path Protection**: Prevents directory traversal attacks with safe path joining
+- **Secure Authentication**: Hugging Face tokens stored using standard `huggingface_hub` library
 
 ## License
 

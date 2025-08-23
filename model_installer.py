@@ -4,9 +4,11 @@ import os
 import urllib
 import logging
 from urllib.parse import urlparse
-from typing import Callable, Any
+from typing import Callable, Any, Dict, Optional
 import asyncio
 import aiohttp
+import json
+from pathlib import Path
 
 import folder_paths
 
@@ -55,6 +57,11 @@ class ModelInstaller:
         # Lazy accessor because the aiohttp ClientSession is created after server init
         self._get_client_session = get_client_session
         self._active_downloads: dict[str, int] = {}
+        
+        # Workflow validation system
+        self._workflow_index: Optional[Dict] = None
+        self._index_file = Path(__file__).parent / "workflow_model_index.json"
+        self._templates_dir = Path(__file__).parent.parent / "custom_workflow_templates"
 
     async def expected_size(self, url: str) -> int:
         """Get expected file size for a URL."""
@@ -221,3 +228,168 @@ class ModelInstaller:
             asyncio.create_task(self.download(url, dest_path))
         except Exception as e:
             logging.warning(f"[Model Installer] failed to queue download: {e}")
+
+    # Workflow validation methods
+    def validate_model_request(self, url: str, directory: str, filename: str) -> bool:
+        """
+        Validate model request against workflow templates.
+
+        Args:
+            url: The download URL for the model
+            directory: The target directory (e.g., "vae", "checkpoints")
+            filename: The model filename (e.g., "model.safetensors")
+
+        Returns:
+            True if the model is found in any workflow template, False otherwise
+        """
+        try:
+            index = self._get_workflow_index()
+
+            # Check if model exists in index
+            model_key = f"{directory}/{filename}"
+            if model_key not in index:
+                logging.debug(f"[Model Installer] Model key '{model_key}' not found in workflow index")
+                return False
+
+            # Check if URL matches any known URL for this model
+            known_urls = set(index[model_key].get("urls", []))
+            if url in known_urls:
+                logging.debug(f"[Model Installer] Validated: {model_key} from {url}")
+                return True
+            else:
+                logging.warning(f"[Model Installer] URL mismatch for {model_key}. Got: {url}, Expected one of: {known_urls}")
+                return False
+
+        except Exception as e:
+            logging.error(f"[Model Installer] Validation error: {e}")
+            return False  # Fail secure
+
+    def _get_workflow_index(self) -> Dict:
+        """Get workflow index, refresh if needed."""
+        if self._workflow_index is None or not self._check_workflow_index():
+            logging.info("[Model Installer] Refreshing workflow model index")
+            self._workflow_index = self._create_workflow_index()
+        return self._workflow_index
+
+    def _check_workflow_index(self) -> bool:
+        """Check if current workflow index is still valid."""
+        if not self._index_file.exists():
+            logging.debug("[Model Installer] Workflow index file does not exist")
+            return False
+
+        try:
+            index_mtime = self._index_file.stat().st_mtime
+
+            # Check if any workflow file is newer than index
+            if self._templates_dir.exists():
+                for json_file in self._templates_dir.glob("*.json"):
+                    if json_file.name == "index.json":
+                        continue
+                    if json_file.stat().st_mtime > index_mtime:
+                        logging.debug(f"[Model Installer] Workflow {json_file} is newer than index")
+                        return False  # Index is stale
+
+            return True  # Index is current
+
+        except Exception as e:
+            logging.warning(f"[Model Installer] Error checking workflow index: {e}")
+            return False  # Refresh on error
+
+    def _create_workflow_index(self) -> Dict:
+        """Create new workflow index from all workflow files."""
+        index = {}
+
+        if not self._templates_dir.exists():
+            logging.debug(f"[Model Installer] Templates directory does not exist: {self._templates_dir}")
+            return index
+
+        logging.info(f"[Model Installer] Scanning workflow templates in: {self._templates_dir}")
+
+        for json_file in self._templates_dir.glob("*.json"):
+            if json_file.name == "index.json":
+                continue
+
+            try:
+                with open(json_file, 'r', encoding='utf-8') as f:
+                    workflow = json.load(f)
+
+                # Extract models from all nodes
+                nodes = workflow.get("nodes", [])
+                if isinstance(nodes, dict):
+                    # Handle both array and object formats
+                    nodes = nodes.values()
+
+                models_found = 0
+                for node in nodes:
+                    if not isinstance(node, dict):
+                        continue
+
+                    models = node.get("properties", {}).get("models", [])
+                    for model in models:
+                        if not isinstance(model, dict):
+                            continue
+
+                        name = model.get("name")
+                        directory = model.get("directory")
+                        url = model.get("url")
+
+                        if name and directory and url:
+                            key = f"{directory}/{name}"
+                            if key not in index:
+                                index[key] = {"urls": set(), "workflows": set()}
+                            index[key]["urls"].add(url)
+                            index[key]["workflows"].add(json_file.name)
+                            models_found += 1
+
+                if models_found > 0:
+                    logging.debug(f"[Model Installer] Found {models_found} models in {json_file.name}")
+
+            except Exception as e:
+                logging.warning(f"[Model Installer] Failed to parse workflow {json_file}: {e}")
+
+        # Convert sets to lists for JSON serialization
+        serializable_index = {}
+        for key, data in index.items():
+            serializable_index[key] = {
+                "urls": list(data["urls"]),
+                "workflows": list(data["workflows"])
+            }
+
+        # Save index to disk
+        try:
+            with open(self._index_file, 'w', encoding='utf-8') as f:
+                json.dump(serializable_index, f, indent=2)
+            logging.info(f"[Model Installer] Saved workflow index with {len(serializable_index)} models to {self._index_file}")
+        except Exception as e:
+            logging.warning(f"[Model Installer] Failed to save workflow index: {e}")
+
+        return serializable_index
+
+    def get_workflow_validation_stats(self) -> Dict:
+        """Get statistics about the current workflow validation index."""
+        try:
+            index = self._get_workflow_index()
+            total_models = len(index)
+            total_urls = sum(len(data["urls"]) for data in index.values())
+            workflows = set()
+            for data in index.values():
+                workflows.update(data["workflows"])
+
+            return {
+                "total_models": total_models,
+                "total_urls": total_urls,
+                "workflows_count": len(workflows),
+                "workflows": sorted(list(workflows)),
+                "index_file_exists": self._index_file.exists(),
+                "index_current": self._check_workflow_index() if self._workflow_index else False
+            }
+        except Exception as e:
+            return {"error": str(e)}
+
+    def initialize_workflow_validation(self):
+        """Initialize workflow validation on startup."""
+        try:
+            stats = self.get_workflow_validation_stats()
+            logging.info(f"[Model Installer] Initialized workflow validation with {stats['total_models']} models from {stats['workflows_count']} workflows")
+        except Exception as e:
+            logging.error(f"[Model Installer] Failed to initialize workflow validation: {e}")

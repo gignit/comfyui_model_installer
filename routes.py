@@ -28,10 +28,12 @@ def register_routes():
     @routes.get("/model_installer/health")
     async def health_check(request):
         """Health check endpoint for frontend feature detection."""
+        stats = installer.get_workflow_validation_stats()
         return web.json_response({
             "ok": True,
             "version": "1.0.0",
-            "name": "ComfyUI Model Installer"
+            "name": "ComfyUI Model Installer",
+            "validator_stats": stats
         })
 
     @routes.get("/models/expected_size")
@@ -106,6 +108,11 @@ def register_routes():
         except Exception:
             logging.warning(f"[Model Installer] install: unsafe path base={base} filename={filename}")
             return web.json_response({"error": "unsafe_path"}, status=400)
+        # SECURITY: Validate model against workflow templates
+        if not installer.validate_model_request(url, folder_name, filename):
+            logging.warning(f"[Model Installer] install: model not found in workflows - {folder_name}/{filename} from {url}")
+            return web.json_response({"error": "Model not found in any workflow template"}, status=403)
+        
         try:
             logging.info(f"[Model Installer] install: starting folder={folder_name} filename={filename}")
             # For HF URLs, if token missing or unauthorized, return 401 early
@@ -215,6 +222,8 @@ def register_routes():
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
+    # Initialize the workflow validation system
+    installer.initialize_workflow_validation()
     logging.info("[Model Installer] Routes registered successfully")
 
 
