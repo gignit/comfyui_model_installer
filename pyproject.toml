@@ -1,6 +1,6 @@
 [project]
 name = "comfyui_model_installer"
-version = "1.0.2"
+version = "1.0.3"
 description = "Automatic model installer for ComfyUI missing models"
 authors = [{name = "Ryan Wyler", email = "ryan.wyler@icloud.com"}]
 license = {text = "MIT"}
@@ -27,4 +27,4 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["comfyui_model_installer"]
+include = ["*"]
