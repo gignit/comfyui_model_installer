@@ -1,6 +1,6 @@
 [project]
 name = "comfyui_model_installer"
-version = "1.0.7"
+version = "1.1.0"
 description = "Automatic model installer for ComfyUI missing models"
 authors = [{name = "Ryan Wyler", email = "ryan.wyler@icloud.com"}]
 license = {text = "MIT"}
@@ -19,7 +19,7 @@ Issues = "https://github.com/gignit/comfyui_model_installer/issues"
 PublisherId = "gignit"
 NodeId = "comfyui_model_installer"
 DisplayName = "Model Installer"
-Icon = "https://raw.githubusercontent.com/gignit/comfyui_model_installer/main/icon.png"
+Icon = "https://raw.githubusercontent.com/gignit/comfyui_model_installer/main/images/icon.png"
 
 [build-system]
 requires = ["setuptools>=45", "wheel"]
