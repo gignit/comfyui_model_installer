@@ -14,7 +14,7 @@ WEB_DIRECTORY = "./web"
 # Register server routes when ComfyUI is running (safe to import during CLI install)
 try:
     from .routes import try_register_routes
-    # try_register_routes()
+    try_register_routes()
 except Exception:
     pass  # Avoid blocking CLI or install if Comfy isn't running
 
