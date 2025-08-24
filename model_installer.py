@@ -300,44 +300,44 @@ class ModelInstaller:
         logging.info(f"[Model Installer] download: requesting url={url} -> {dest_path}")
         
         try:
-        headers = {}
-        if self._is_hf_url(url):
-            token = self._get_hf_token()
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
-            
-        # Try to prefetch expected bytes for progress tracking
-        try:
-            expected = await self._expected_size_http(url, headers or None)
-            if expected > 0:
-                self._active_downloads[dest_path] = expected
-                logging.info(f"[Model Installer] download: expected_size={expected} bytes")
+            headers = {}
+            if self._is_hf_url(url):
+                token = self._get_hf_token()
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+                
+            # Try to prefetch expected bytes for progress tracking
+            try:
+                expected = await self._expected_size_http(url, headers or None)
+                if expected > 0:
+                    self._active_downloads[dest_path] = expected
+                    logging.info(f"[Model Installer] download: expected_size={expected} bytes")
             except Exception as e:
                 logging.debug(f"[Model Installer] download: could not get expected size: {e}")
-            
+                
             sess = self._get_download_session()
-        async with sess.get(url, headers=headers or None) as resp:
-            resp.raise_for_status()
-                
-            if dest_path not in self._active_downloads:
-                cl = int(resp.headers.get("Content-Length", 0))
-                if cl:
-                    self._active_downloads[dest_path] = cl
-                
-            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-            total = 0
-                
-            with open(dest_path, "wb") as f:
+            async with sess.get(url, headers=headers or None) as resp:
+                resp.raise_for_status()
+                    
+                if dest_path not in self._active_downloads:
+                    cl = int(resp.headers.get("Content-Length", 0))
+                    if cl:
+                        self._active_downloads[dest_path] = cl
+                    
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                total = 0
+                    
+                with open(dest_path, "wb") as f:
                     # Use configured chunk size
                     config = get_download_config()
                     async for chunk in resp.content.iter_chunked(config["chunk_size"]):
-                    if chunk:
-                        f.write(chunk)
-                        total += len(chunk)
-                
-            logging.info(f"[Model Installer] download: completed bytes={total}")
-            self._active_downloads.pop(dest_path, None)
-            return total
+                        if chunk:
+                            f.write(chunk)
+                            total += len(chunk)
+                    
+                logging.info(f"[Model Installer] download: completed bytes={total}")
+                self._active_downloads.pop(dest_path, None)
+                return total
                 
         except (asyncio.TimeoutError, aiohttp.ConnectionTimeoutError):
             config = get_download_config()
@@ -663,7 +663,7 @@ class ModelInstaller:
                     if models_found > 0:
                         logging.debug(f"[Model Installer] Found {models_found} models in {json_file.name}")
                         
-        except Exception as e:
+                except Exception as e:
                     logging.warning(f"[Model Installer] Failed to parse workflow {json_file.name}: {e}")
             
         except ImportError:
