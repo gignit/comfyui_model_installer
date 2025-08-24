@@ -14,6 +14,7 @@ from .model_installer import (
     get_best_folder_path,
     safe_join
 )
+from .config import is_uninstall_enabled
 
 
 def register_routes():
@@ -34,7 +35,10 @@ def register_routes():
             "ok": True,
             "version": "1.0.0",
             "name": "ComfyUI Model Installer",
-            "validator_stats": stats
+            "validator_stats": stats,
+            "features": {
+                "allow_uninstall": is_uninstall_enabled()
+            }
         })
 
     @routes.get("/models/expected_size")
@@ -57,7 +61,7 @@ def register_routes():
         folder_name = folder_hint or resolve_folder_name_from_url(url or "")
         if not folder_name:
             return web.json_response({"present": False, "reason": "unknown_folder"})
-        base = get_best_folder_path(folder_name)
+        base = get_primary_folder_path(folder_name)
         if not base:
             return web.json_response({"present": False, "reason": "missing_base_dir"})
         if not filename and url:
@@ -161,6 +165,10 @@ def register_routes():
     @routes.post("/models/uninstall")
     async def post_model_uninstall(request):
         """Uninstall (delete) a model file."""
+        # Check if uninstall feature is enabled
+        if not is_uninstall_enabled():
+            return web.json_response({"error": "Uninstall not enabled on this server."}, status=403)
+        
         try:
             body = await request.json()
         except Exception:
@@ -225,6 +233,10 @@ def register_routes():
 
     # Initialize the workflow validation system
     installer.initialize_workflow_validation()
+    
+    # Note: ComfyUI doesn't have a standard feature_flags system
+    # The frontend will detect uninstall capability by trying the health endpoint
+    
     logging.info("[Model Installer] Routes registered successfully")
 
 

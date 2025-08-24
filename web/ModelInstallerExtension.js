@@ -80,6 +80,7 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
         };
 
         const setLabel = (installed) => {
+          // Simple approach: show Uninstall button, let server handle the 403 error
           btn.textContent = installed ? 'Uninstall' : 'Install';
         };
 
