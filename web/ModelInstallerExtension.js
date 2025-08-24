@@ -66,10 +66,19 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
         url = normalizeDownloadUrl(url);
 
         const container = document.createElement('div');
-        container.className = 'model-install-buttons flex gap-2';
+        container.className = 'model-install-buttons flex gap-2 flex-col';
+        
+        // Path selector dropdown (hidden by default)
+        const pathSelector = document.createElement('select');
+        pathSelector.className = 'p-dropdown p-component p-inputtext p-inputtext-sm';
+        pathSelector.style.display = 'none';
+        
+        // Install button
         const btn = document.createElement('button');
         btn.className = 'p-button p-component p-button-outlined p-button-sm';
         btn.textContent = '...';
+        
+        container.appendChild(pathSelector);
         container.appendChild(btn);
         row.appendChild(container);
         // button injected
@@ -86,6 +95,7 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
 
         const query = async () => {
           try {
+            // Initialize path selector if we have model info
             let qs = '';
             if (directory && filename) {
               qs = `directory=${encodeURIComponent(directory)}&filename=${encodeURIComponent(filename)}`;
@@ -94,12 +104,20 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
             }
             const res = await fetch(`/models/status?${qs}`);
             const js = await res.json();
+            
+            // Update path selector with storage info from status response (when model not found)
+            if (directory && filename) {
+              updatePathSelector(pathSelector, directory, js.storage_info);
+            }
+            
             if (js.state === 'downloading') {
               btn.textContent = 'Downloading…';
               btn.disabled = true;
+              pathSelector.disabled = true; // Disable during download
             } else {
               setLabel(!!js.present);
               btn.disabled = false;
+              pathSelector.disabled = false; // Re-enable after download
             }
             btn.onclick = async () => {
               // Decide intent from current label to avoid stale js.present when file exists but is downloading
@@ -109,10 +127,20 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
                 const ep = js.present ? '/models/uninstall' : '/models/install';
                 let body = {};
                 if (js.present) {
-                  body = { directory: js.folder, filename: (js.path || '').split(/[\\/]/).pop() };
-                } else if (url || (directory && filename)) {
-                  const finalUrl = url && url.length ? url : '';
-                  body = { url: finalUrl, directory, filename };
+                  // Uninstall: use existing format
+                  body = { directory: js.folder, name: (js.path || '').split(/[\\/]/).pop() };
+                } else if (url && directory && filename) {
+                  // Install: use new structured format
+                  body = { 
+                    name: filename,
+                    directory: directory, 
+                    url: normalizeDownloadUrl(url)
+                  };
+                  
+                  // Add user-selected path if dropdown is visible and has selection
+                  if (pathSelector.style.display !== 'none' && pathSelector.value) {
+                    body.path = pathSelector.value;
+                  }
                 } else {
                   throw new Error('Insufficient information to install');
                 }
@@ -121,6 +149,7 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
                   // Disable immediately; only show progress after server accepts
                   btn.textContent = 'Downloading…';
                   btn.disabled = true;
+                  pathSelector.disabled = true; // Disable path selector during install
                 } else {
                   setBusy(true);
                 }
@@ -169,6 +198,7 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
                   if (installing) {
                     btn.textContent = 'Install';
                     btn.disabled = false;
+                    pathSelector.disabled = false; // Re-enable path selector on error
                   } else {
                     setBusy(false);
                   }
@@ -194,6 +224,7 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
                 if (installing) {
                   btn.textContent = 'Install';
                   btn.disabled = false;
+                  pathSelector.disabled = false; // Re-enable path selector on error
                 } else {
                   setBusy(false);
                 }
@@ -210,6 +241,56 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
     observer.observe(document.body, { childList: true, subtree: true });
   },
 });
+
+// Helper functions for path selection
+function parseModelInfo(labelText) {
+  // Parse format: "text_encoders / clip_l.safetensors"
+  const match = labelText.match(/^(.*?)\s*\/\s*([^\s]+\.[a-z0-9]+)\b/i);
+  if (match) {
+    return {
+      directory: match[1].trim(),  // "text_encoders"
+      name: match[2].trim()        // "clip_l.safetensors"
+    };
+  }
+  return null;
+}
+
+// Get storage info for path selection
+async function getStorageInfo() {
+  try {
+    const response = await fetch('/model_installer/health');
+    const data = await response.json();
+    return data.storage_info || {};
+  } catch {
+    return {};
+  }
+}
+
+// Format bytes to GB
+function formatGB(bytes) {
+  return (bytes / (1024**3)).toFixed(1);
+}
+
+// Update path selector with available paths for specific folder type
+function updatePathSelector(pathSelector, directory, storageInfo) {
+  // Use storage info from status response (when model not found) or from health check
+  const storage = storageInfo || {};
+  const paths = storage[directory] || [];  // Use directory as folder_name
+  
+  if (paths.length > 1) {
+    pathSelector.innerHTML = '';
+    paths.forEach((pathInfo, index) => {
+      const option = document.createElement('option');
+      option.value = pathInfo.path;
+      option.textContent = `${pathInfo.path} (${formatGB(pathInfo.available_bytes)} GB free)`;
+      if (index === 0) option.selected = true; // Auto-select best (most space)
+      pathSelector.appendChild(option);
+    });
+    pathSelector.style.display = 'block';
+  } else {
+    pathSelector.style.display = 'none';
+  }
+}
 
 function openHfTokenDialog() {
   return new Promise((resolve) => {

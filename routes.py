@@ -7,13 +7,7 @@ from aiohttp import web
 import aiohttp
 from server import PromptServer
 
-from .model_installer import (
-    ModelInstaller, 
-    resolve_folder_name_from_url, 
-    get_primary_folder_path,
-    get_best_folder_path,
-    safe_join
-)
+from .model_installer import ModelInstaller
 from .config import is_uninstall_enabled
 
 
@@ -31,13 +25,16 @@ def register_routes():
     async def health_check(request):
         """Health check endpoint for frontend feature detection."""
         stats = installer.get_workflow_validation_stats()
+        storage_info = ModelInstaller.get_storage_info()
         return web.json_response({
             "ok": True,
             "version": "1.0.0",
             "name": "ComfyUI Model Installer",
             "validator_stats": stats,
+            "storage_info": storage_info,
             "features": {
-                "allow_uninstall": is_uninstall_enabled()
+                "allow_uninstall": is_uninstall_enabled(),
+                "multi_path_selection": True
             }
         })
 
@@ -58,29 +55,47 @@ def register_routes():
         filename = request.rel_url.query.get("filename")
         if not url and not (folder_hint and filename):
             return web.json_response({"error": "missing url or directory+filename"}, status=400)
-        folder_name = folder_hint or resolve_folder_name_from_url(url or "")
+        folder_name = folder_hint
         if not folder_name:
-            return web.json_response({"present": False, "reason": "unknown_folder"})
-        base = get_primary_folder_path(folder_name)
-        if not base:
-            return web.json_response({"present": False, "reason": "missing_base_dir"})
+            return web.json_response({"present": False, "reason": "directory_required"})
         if not filename and url:
             filename = os.path.basename(urllib.parse.urlparse(url).path)
         if not filename:
             return web.json_response({"present": False, "reason": "unknown_filename"})
-        try:
-            target = safe_join(base, filename)
-        except Exception:
-            return web.json_response({"present": False, "reason": "unsafe_path"})
-        present = os.path.isfile(target)
-        size = os.path.getsize(target) if present else 0
-        expected = installer.active_expected(target)
-        if expected > 0:
-            state = "downloading" if size < expected else "installed"
+        
+        # Use ComfyUI's native function to find the model
+        import folder_paths
+        model_path = folder_paths.get_full_path(folder_name, filename)
+        
+        if model_path:
+            # Model found - return status with path
+            size = os.path.getsize(model_path)
+            expected = installer.active_expected(model_path)
+            if expected > 0:
+                state = "downloading" if size < expected else "installed"
+            else:
+                state = "installed"
+            logging.debug(f"[Model Installer] status: folder={folder_name} filename={filename} present=True size={size} expected={expected} state={state}")
+            return web.json_response({
+                "present": True,
+                "size": size,
+                "expected": expected,
+                "state": state,
+                "folder": folder_name,
+                "path": model_path
+            })
         else:
-            state = "installed" if present else "absent"
-        logging.debug(f"[Model Installer] status: folder={folder_name} filename={filename} present={present} size={size} expected={expected} state={state}")
-        return web.json_response({"present": present, "size": size, "expected": expected, "state": state, "folder": folder_name, "path": target})
+            # Model not found - return storage info for this folder type
+            storage_info = ModelInstaller.get_storage_info(folder_name)
+            logging.debug(f"[Model Installer] status: folder={folder_name} filename={filename} present=False")
+            return web.json_response({
+                "present": False,
+                "size": 0,
+                "expected": 0,
+                "state": "absent",
+                "folder": folder_name,
+                "storage_info": storage_info
+            })
 
     @routes.post("/models/install")
     async def post_model_install(request):
@@ -89,37 +104,62 @@ def register_routes():
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid_json"}, status=400)
+        
+        # Extract structured request fields
+        name = body.get("name")           # e.g., "model.safetensors"
+        directory = body.get("directory") # e.g., "text_encoders" 
         url = body.get("url")
-        folder_hint = body.get("directory")
-        filename = body.get("filename")
-        if not url:
-            logging.warning("[Model Installer] install: missing url in request")
-            return web.json_response({"error": "missing url"}, status=400)
-        folder_name = folder_hint or resolve_folder_name_from_url(url)
-        if not folder_name:
-            logging.warning(f"[Model Installer] install: unknown folder for url={url}")
-            return web.json_response({"error": "unknown_folder"}, status=400)
-        base = get_best_folder_path(folder_name)
-        if not base:
-            logging.warning(f"[Model Installer] install: missing base dir for folder={folder_name}")
-            return web.json_response({"error": "missing_base_dir"}, status=400)
-        if not filename:
-            filename = os.path.basename(urllib.parse.urlparse(url or '').path)
-        if not filename:
-            logging.warning("[Model Installer] install: missing filename after parsing url")
-            return web.json_response({"error": "missing filename"}, status=400)
+        user_path = body.get("path")      # Optional user selection
+        
+        # Validate required fields
+        if not all([name, directory, url]):
+            logging.warning("[Model Installer] install: missing required fields")
+            return web.json_response({"error": "Missing required fields: name, directory, url"}, status=400)
+        
+        # Zero-trust: Validate all client info against templates
+        if not installer.validate_model_request(url, directory, name):
+            logging.warning(f"[Model Installer] install: model not found in workflows - {directory}/{name} from {url}")
+            return web.json_response({"error": "Model not found in workflow templates"}, status=403)
+        
+        # Use directory as folder_name (ComfyUI terminology)
+        folder_name = directory
+        
+        # Get expected size for storage validation
         try:
-            dest = safe_join(base, filename)
+            expected_size = await installer.expected_size(url)
         except Exception:
-            logging.warning(f"[Model Installer] install: unsafe path base={base} filename={filename}")
+            expected_size = 0
+        
+        # Path selection and validation
+        if user_path:
+            # Validate user-selected path
+            valid, error_msg = installer.validate_install_path(folder_name, user_path, expected_size)
+            if not valid:
+                logging.warning(f"[Model Installer] install: {error_msg}")
+                return web.json_response({"error": error_msg}, status=400)
+            base = user_path
+        else:
+            # Auto-select best path (most free space)
+            base = ModelInstaller.choose_free_path(folder_name)
+            if not base:
+                logging.warning(f"[Model Installer] install: no valid paths found for {folder_name}")
+                return web.json_response({"error": f"No valid paths found for {folder_name}"}, status=400)
+            
+            # Check storage on auto-selected path
+            valid, error_msg = installer.validate_install_path(folder_name, base, expected_size)
+            if not valid:
+                logging.warning(f"[Model Installer] install: {error_msg}")
+                return web.json_response({"error": error_msg}, status=400)
+        
+        # Continue with existing download logic
+        try:
+            dest = ModelInstaller.safe_join(base, name)
+        except Exception:
+            logging.warning(f"[Model Installer] install: unsafe path base={base} name={name}")
             return web.json_response({"error": "unsafe_path"}, status=400)
-        # SECURITY: Validate model against workflow templates
-        if not installer.validate_model_request(url, folder_name, filename):
-            logging.warning(f"[Model Installer] install: model not found in workflows - {folder_name}/{filename} from {url}")
-            return web.json_response({"error": "Model not found in any workflow template"}, status=403)
         
         try:
-            logging.info(f"[Model Installer] install: starting folder={folder_name} filename={filename}")
+            logging.info(f"[Model Installer] install: starting folder={folder_name} name={name}")
             # For HF URLs, if token missing or unauthorized, return 401 early
             if installer._is_hf_url(url):
                 ok = await installer.check_auth(url)
@@ -173,7 +213,9 @@ def register_routes():
             body = await request.json()
         except Exception:
             return web.json_response({"error": "invalid_json"}, status=400)
-        folder_name = body.get("directory") or resolve_folder_name_from_url(body.get("url") or "")
+        folder_name = body.get("directory")
+        if not folder_name:
+            return web.json_response({"error": "directory field required"}, status=400)
         filename = body.get("filename")
         url = body.get("url")
         if not filename and url:
@@ -184,7 +226,7 @@ def register_routes():
         if not base:
             return web.json_response({"error": "missing_base_dir"}, status=400)
         try:
-            target = safe_join(base, filename)
+            target = ModelInstaller.safe_join(base, filename)
         except Exception:
             return web.json_response({"error": "unsafe_path"}, status=400)
         if os.path.isfile(target):

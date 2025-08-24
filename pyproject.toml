@@ -1,7 +1,7 @@
 [project]
 name = "comfyui_model_installer"
-version = "1.1.2"
-description = "MUST HAVE feature for Cloud Installs. Single-Click Install Button to install Missing Model Files for Workflows. Easiest way to use ComfyUI Ever! Don't click the \"Download\" button, click the \"Install\" button instead. This easy \"Install\" button securely has the server download the missing file and install the file into the correct directory on the server. Why? You ever wanted to try out a workflow but didn't want to spend the 15 minutes to download the files and put the files where they need to be? Wait no more, use \"Model Installer\" to click the \"Install\" button."
+version = "1.1.3"
+description = "MUST HAVE feature for Cloud Installs. Single-Click Install Button to install Missing Model Files for Workflows. Supports 'extra_model_paths' via dropdown selection. Easiest way to use ComfyUI Ever! Instead of clicking the 'Download' button, click the 'Install' button instead! This easy 'Install' button securely has the server download the missing file(s) and install the file into the correct directory on the server. Why? You ever wanted to try out a workflow but didn't want to spend the 15 minutes to download the files and put the files where they need to be? Wait no more, use 'Model Installer' and click the 'Install' button. Enjoy."
 authors = [{name = "Ryan Wyler", email = "ryan.wyler@icloud.com"}]
 license = {text = "MIT"}
 readme = "README.md"

@@ -8,103 +8,13 @@ from typing import Callable, Any, Dict, Optional
 import asyncio
 import aiohttp
 import json
-import re
+
 from pathlib import Path
 
 import folder_paths
 
 
-def resolve_folder_name_from_url(url: str) -> str | None:
-    """Map URL segments to folder names (fallback when directory not provided)."""
-    lowered = url.lower()
-    segment_to_folder = {
-        "/vae/": "vae",
-        "/checkpoints/": "checkpoints",
-        "/loras/": "loras",
-        "/clip_vision/": "clip_vision",
-        "/text_encoders/": "text_encoders",
-        "/unet/": "diffusion_models",
-        "/diffusion_models/": "diffusion_models",
-        "/upscale_models/": "upscale_models",
-        "/controlnet/": "controlnet",
-    }
-    for seg, folder in segment_to_folder.items():
-        if seg in lowered:
-            return folder
-    return None
-
-
-def get_primary_folder_path(folder_name: str) -> str | None:
-    """Get the primary path for a folder name from ComfyUI's folder_paths."""
-    entry = folder_paths.folder_names_and_paths.get(folder_name)
-    if not entry:
-        return None
-    paths = entry[0]
-    return paths[0] if paths else None
-
-
-def get_best_folder_path(folder_name: str) -> str | None:
-    """
-    Get the best path for a folder name, choosing the one with most free disk space.
-    
-    This function respects extra_model_paths.yaml by checking all available paths
-    for the given model type and selecting the one with the most available space.
-    
-    Args:
-        folder_name: The folder type (e.g., "checkpoints", "vae", "loras")
-        
-    Returns:
-        Path with most free space, or None if no valid paths found
-    """
-    import shutil
-    
-    entry = folder_paths.folder_names_and_paths.get(folder_name)
-    if not entry:
-        logging.warning(f"[Model Installer] No folder paths found for '{folder_name}'")
-        return None
-    
-    paths = entry[0]
-    if not paths:
-        logging.warning(f"[Model Installer] Empty path list for '{folder_name}'")
-        return None
-    
-    best_path = None
-    most_free = -1
-    
-    for path in paths:
-        try:
-            # Ensure the directory exists
-            os.makedirs(path, exist_ok=True)
-            
-            # Get free disk space
-            free_bytes = shutil.disk_usage(path).free
-            free_gb = free_bytes / (1024**3)  # Convert to GB for logging
-            
-            logging.debug(f"[Model Installer] Path '{path}' has {free_gb:.1f} GB free")
-            
-            if free_bytes > most_free:
-                best_path = path
-                most_free = free_bytes
-                
-        except Exception as e:
-            logging.warning(f"[Model Installer] Cannot access path '{path}': {e}")
-            continue
-    
-    if best_path:
-        free_gb = most_free / (1024**3)
-        logging.info(f"[Model Installer] Selected path '{best_path}' with {free_gb:.1f} GB free space")
-    else:
-        logging.error(f"[Model Installer] No accessible paths found for '{folder_name}'")
-    
-    return best_path
-
-
-def safe_join(base: str, filename: str) -> str:
-    """Safely join base path and filename, preventing directory traversal."""
-    dest = os.path.abspath(os.path.join(base, filename))
-    if os.path.commonpath((dest, os.path.abspath(base))) != os.path.abspath(base):
-        raise ValueError("Unsafe path")
-    return dest
+# URL parsing function removed - client now provides structured requests
 
 
 class ModelInstaller:
@@ -119,6 +29,201 @@ class ModelInstaller:
         self._workflow_index: Optional[Dict] = None
         self._index_file = Path(__file__).parent / "workflow_model_index.json"
         self._index_loaded_this_session = False
+
+    @staticmethod
+    def get_primary_folder_path(folder_name: str) -> str | None:
+        """Get the primary path for a folder name from ComfyUI's folder_paths."""
+        entry = folder_paths.folder_names_and_paths.get(folder_name)
+        if not entry:
+            return None
+        paths = entry[0]
+        return paths[0] if paths else None
+
+    @staticmethod
+    def get_model_paths() -> Dict[str, tuple[list[str], set[str]]]:
+        """
+        Filter ComfyUI's native folder paths to exclude output directories and non-existent legacy paths.
+        
+        Applies intelligent filtering:
+        1. For single paths: Always keeps them (must have at least one option)
+        2. For multiple paths: Excludes output directories and non-existent legacy paths
+        3. Legacy paths (via map_legacy) are only excluded if they don't exist on disk
+        
+        Returns:
+            Dict mapping folder names to (paths_list, extensions) tuples
+        """
+        
+        # Get ComfyUI's models directory and output directory
+        models_dir = folder_paths.models_dir
+        output_dir = folder_paths.get_output_directory()
+        output_dir_normalized = os.path.normpath(output_dir)
+        
+        filtered_paths = {}
+        
+        # Use ComfyUI's native folder_names_and_paths
+        for folder_name, folder_info in folder_paths.folder_names_and_paths.items():
+            paths = folder_info[0]  # (paths_list, extensions)
+            extensions = folder_info[1]
+            
+            if not paths:
+                continue
+                
+            # If there's only one path, return it
+            if len(paths) == 1:
+                filtered_paths[folder_name] = folder_info
+                continue
+                
+            # For multiple paths, apply legacy and output filtering
+            filtered_path_list = []
+            for path in paths:
+                path_normalized = os.path.normpath(path)
+                
+                # Skip paths under output directory
+                if path_normalized.startswith(output_dir_normalized):
+                    continue
+                
+                # Check if this is a legacy path that doesn't exist
+                path_dir_name = os.path.basename(path_normalized)
+                
+                # Check if this directory name maps to the current folder_name via legacy mapping
+                mapped_folder_name = folder_paths.map_legacy(path_dir_name)
+                is_legacy_path = (mapped_folder_name == folder_name and path_dir_name != folder_name)
+                
+                if is_legacy_path:
+                    # This is a legacy path - only include if it exists on disk
+                    if os.path.exists(path):
+                        filtered_path_list.append(path)
+                    # If legacy path doesn't exist, skip it (don't include in list)
+                else:
+                    # Not a legacy path (modern or custom) - always include
+                    filtered_path_list.append(path)
+            
+            # Only include if we have paths remaining after filtering
+            if filtered_path_list:
+                filtered_paths[folder_name] = (filtered_path_list, extensions)
+        
+        return filtered_paths
+
+    @staticmethod
+    def choose_free_path(folder_name: str) -> str | None:
+        """
+        Get the best path for a folder name, choosing the one with most free disk space.
+        
+        This function uses ComfyUI's native path building logic, excluding output directories,
+        and respects extra_model_paths.yaml by checking all available paths for the given 
+        model type and selecting the one with the most available space.
+        
+        Args:
+            folder_name: The folder type (e.g., "checkpoints", "vae", "loras")
+            
+        Returns:
+            Path with most free space, or None if no valid paths found
+        """
+        import shutil
+        
+        # Use filtered model paths (excludes output paths)
+        model_paths = ModelInstaller.get_model_paths()
+        entry = model_paths.get(folder_name)
+        if not entry:
+            logging.warning(f"[Model Installer] No folder paths found for '{folder_name}'")
+            return None
+        
+        paths = entry[0]
+        if not paths:
+            logging.warning(f"[Model Installer] Empty path list for '{folder_name}'")
+            return None
+        
+        best_path = None
+        most_free = -1
+        
+        for path in paths:
+            try:
+                # Ensure the directory exists
+                os.makedirs(path, exist_ok=True)
+                
+                # Get free disk space
+                free_bytes = shutil.disk_usage(path).free
+                free_gb = free_bytes / (1024**3)  # Convert to GB for logging
+                
+                logging.debug(f"[Model Installer] Path '{path}' has {free_gb:.1f} GB free")
+                
+                if free_bytes > most_free:
+                    best_path = path
+                    most_free = free_bytes
+                    
+            except Exception as e:
+                logging.warning(f"[Model Installer] Cannot access path '{path}': {e}")
+                continue
+        
+        if best_path:
+            free_gb = most_free / (1024**3)
+            logging.info(f"[Model Installer] Selected path '{best_path}' with {free_gb:.1f} GB free space")
+        else:
+            logging.error(f"[Model Installer] No accessible paths found for '{folder_name}'")
+        
+        return best_path
+
+    @staticmethod
+    def get_storage_info(folder_name: str = None) -> Dict[str, list[Dict]]:
+        """Get storage info for ComfyUI folder types, excluding output directories.
+        
+        Args:
+            folder_name: If provided, only return storage info for this folder type.
+                        If None, return info for all folder types.
+        """
+        import shutil
+        result = {}
+        
+        # Use filtered model paths (excludes output paths)
+        model_paths = ModelInstaller.get_model_paths()
+        
+        # Filter to specific folder_name if provided
+        if folder_name:
+            if folder_name not in model_paths:
+                return {}
+            items_to_process = {folder_name: model_paths[folder_name]}
+        else:
+            items_to_process = model_paths
+        
+        for current_folder_name, folder_info in items_to_process.items():
+            paths = folder_info[0]  # (paths_list, extensions)
+            if not paths:
+                continue
+                
+            path_info = []
+            for path in paths:
+                try:
+                    # Find closest existing parent for storage check (no makedirs)
+                    check_path = path
+                    while not os.path.exists(check_path) and check_path != os.path.dirname(check_path):
+                        check_path = os.path.dirname(check_path)
+                    
+                    if os.path.exists(check_path):
+                        usage = shutil.disk_usage(check_path)
+                        path_info.append({
+                            "path": path,                           # Full intended path
+                            "total_bytes": usage.total,
+                            "used_bytes": usage.total - usage.free,
+                            "available_bytes": usage.free
+                        })
+                except Exception as e:
+                    logging.warning(f"[Model Installer] Cannot get storage for {path}: {e}")
+                    continue
+            
+            if path_info:
+                # Preserve ComfyUI's native path order (no sorting by available space)
+                # The frontend can display storage info, but order follows ComfyUI's preferences
+                result[current_folder_name] = path_info  # Key is folder_name (e.g., "text_encoders")
+        
+        return result
+
+    @staticmethod
+    def safe_join(base: str, filename: str) -> str:
+        """Safely join base path and filename, preventing directory traversal."""
+        dest = os.path.abspath(os.path.join(base, filename))
+        if os.path.commonpath((dest, os.path.abspath(base))) != os.path.abspath(base):
+            raise ValueError("Unsafe path")
+        return dest
 
     async def expected_size(self, url: str) -> int:
         """Get expected file size for a URL."""
@@ -327,6 +432,32 @@ class ModelInstaller:
             logging.error(f"[Model Installer] Validation error: {e}")
             return False  # Fail secure
 
+    def validate_install_path(self, folder_name: str, path: str, expected_size: int = 0) -> tuple[bool, str]:
+        """Validate user-selected path and check storage using native path building."""
+        import shutil
+        
+        # Check if path is valid for this folder type using filtered model paths
+        model_paths = ModelInstaller.get_model_paths()
+        entry = model_paths.get(folder_name)
+        if not entry:
+            return False, f"Unknown folder type: {folder_name}"
+        
+        valid_paths = entry[0]
+        if path not in valid_paths:
+            return False, f"Invalid path for {folder_name}. Valid paths: {valid_paths}"
+        
+        # Check available storage
+        try:
+            available_space = shutil.disk_usage(path).free
+            if expected_size > 0 and expected_size > available_space:
+                gb_needed = expected_size / (1024**3)
+                gb_available = available_space / (1024**3)
+                return False, f"Not enough storage. Need {gb_needed:.1f}GB, available {gb_available:.1f}GB"
+        except Exception as e:
+            return False, f"Cannot check storage for path {path}: {e}"
+        
+        return True, ""
+
     def _get_workflow_index(self) -> Dict:
         """Get workflow index, refresh if needed."""
         if self._workflow_index is None or not self._check_workflow_index():
@@ -378,7 +509,7 @@ class ModelInstaller:
                     
                     models_found = 0
                     
-                    # Method 1: Parse structured model metadata from properties.models arrays
+                    # Parse structured model metadata from properties.models arrays
                     def extract_models_from_node(node_data):
                         nonlocal models_found
                         if isinstance(node_data, dict):
@@ -409,53 +540,6 @@ class ModelInstaller:
                     
                     # Extract from structured data
                     extract_models_from_node(workflow_data)
-                    
-                    # Method 2: Fallback regex extraction for URLs in markdown/text content
-                    # Look for Hugging Face URLs with .safetensors files in subdirectories
-                    hf_pattern = r'https://huggingface\.co/[^/]+/[^/]+/resolve/[^/]+/([^?\s"]+\.safetensors)'
-                    matches = re.findall(hf_pattern, content)
-                    
-                    for full_path in matches:
-                        # Split the path to get directory and filename
-                        path_parts = full_path.split('/')
-                        if len(path_parts) < 2:
-                            continue
-                            
-                        filename = path_parts[-1]
-                        # Get the last directory part (the actual model type directory)
-                        directory = path_parts[-2]
-                        
-                        # Map directory names to ComfyUI folder names
-                        directory_mapping = {
-                            'vae': 'vae',
-                            'checkpoints': 'checkpoints', 
-                            'diffusion_models': 'diffusion_models',
-                            'text_encoders': 'text_encoders',
-                            'clip_vision': 'clip_vision',
-                            'loras': 'loras',
-                            'controlnet': 'controlnet',
-                            'upscale_models': 'upscale_models'
-                        }
-                        
-                        mapped_dir = directory_mapping.get(directory, directory)
-                        key = f"{mapped_dir}/{filename}"
-                        
-                        # Skip if we already found this model via structured data
-                        if key in index:
-                            continue
-                        
-                        # Find the full URL for this model
-                        url_pattern = rf'https://huggingface\.co/[^/]+/[^/]+/resolve/[^/]+/{re.escape(full_path)}[^?\s"]*'
-                        url_matches = re.findall(url_pattern, content)
-                        
-                        if url_matches:
-                            url = url_matches[0]
-                            if key not in index:
-                                index[key] = {"urls": set(), "workflows": set()}
-                            index[key]["urls"].add(url)
-                            index[key]["workflows"].add(json_file.name)
-                            models_found += 1
-                            logging.debug(f"[Model Installer] Found regex model: {key} -> {url}")
                     
                     if models_found > 0:
                         logging.debug(f"[Model Installer] Found {models_found} models in {json_file.name}")
