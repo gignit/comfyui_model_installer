@@ -8,7 +8,7 @@ Automatically installs missing model files from workflow templates with Install/
 - **One-Click Installation**: Install missing models directly from the Missing Models dialog
 - **Smart Directory Detection**: Automatically determines correct installation directories
 - **Multi-Path Support**: Downloads files to path with most available storage (v1.1.2 - requested by BrknSoul)
-- **Enhanced Proxy Support**: Robust proxy detection and timeout handling (v1.1.4)
+- **Enhanced Proxy Support**: Robust proxy detection and timeout handling (v1.1.5)
 - **Progress Tracking**: Real-time download progress with speed, ETA, and completion percentage
 - **Hugging Face Support**: Seamless authentication for gated models
 - **Multiple Sources**: Supports Hugging Face, Civitai, and direct download URLs

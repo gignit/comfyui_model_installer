@@ -419,7 +419,7 @@ function createOrUpdateProgress({ directory, filename, url, expected, onComplete
     panel = document.createElement('div');
     panel.id = 'model-install-progress-panel';
     panel.style.position = 'fixed';
-    panel.style.top = '12px';
+    panel.style.top = '42px';
     panel.style.right = '12px';
     panel.style.width = '320px';
     panel.style.zIndex = '100000';
@@ -451,7 +451,14 @@ function createOrUpdateProgress({ directory, filename, url, expected, onComplete
       </div>
     `;
     panel.appendChild(row);
-    row.querySelector('button[data-action="close"]').onclick = () => row.remove();
+    row.querySelector('button[data-action="close"]').onclick = () => {
+      row.remove();
+      // Clean up panel if no more downloads
+      const panel = document.getElementById('model-install-progress-panel');
+      if (panel && panel.querySelectorAll('[data-key]').length === 0) {
+        panel.remove();
+      }
+    };
   }
 
   const progressValue = row.querySelector('.p-progressbar-value');
@@ -508,7 +515,14 @@ function createOrUpdateProgress({ directory, filename, url, expected, onComplete
         clearInterval(timer);
         progressValue.style.width = '100%';
         percentEl.textContent = '100%';
-        setTimeout(() => row.remove(), 2500);
+        setTimeout(() => {
+          row.remove();
+          // Clean up panel if no more downloads
+          const panel = document.getElementById('model-install-progress-panel');
+          if (panel && panel.querySelectorAll('[data-key]').length === 0) {
+            panel.remove();
+          }
+        }, 2500);
         try { if (typeof onComplete === 'function') onComplete(); } catch {}
       }
     } catch (e) {
