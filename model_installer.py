@@ -42,23 +42,6 @@ class ModelInstaller:
                 connect=config["timeout_connect"]
             )
             
-            # Check for proxy environment variables (support both cases and all_proxy)
-            http_proxy = os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy')
-            https_proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy')
-            all_proxy = os.environ.get('ALL_PROXY') or os.environ.get('all_proxy')
-            
-            # Log detected proxy settings
-            proxy_info = []
-            if http_proxy:
-                proxy_info.append(f"HTTP={http_proxy}")
-            if https_proxy:
-                proxy_info.append(f"HTTPS={https_proxy}")
-            if all_proxy:
-                proxy_info.append(f"ALL={all_proxy}")
-            
-            if proxy_info:
-                logging.info(f"[Model Installer] Using proxy settings: {', '.join(proxy_info)}")
-            
             # Create connector with configured settings - extract only TCPConnector parameters
             connector_params = {k: v for k, v in config.items() 
                               if k in ['limit', 'limit_per_host', 'ttl_dns_cache', 'use_dns_cache']}
@@ -67,7 +50,8 @@ class ModelInstaller:
             # Create session with timeout and connector (use aiohttp default user-agent)
             self._download_session = aiohttp.ClientSession(
                 timeout=timeout,
-                connector=connector
+                connector=connector,
+                trust_env=config["trust_env"]  # Use proxy settings from environment variables
                 # No custom headers - let aiohttp use its default user-agent
             )
             

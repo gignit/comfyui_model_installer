@@ -15,6 +15,9 @@ DOWNLOAD_CONFIG = {
     # "ttl_dns_cache": 10,    # DNS cache TTL in seconds (aiohttp default)
     "use_dns_cache": True,  # Enable DNS caching (aiohttp default)
     
+    # Session settings (for ClientSession)
+    "trust_env": True,      # Automatically use HTTP_PROXY, HTTPS_PROXY, etc. from environment
+    
     # Download settings (for our code)
     "chunk_size": 8192,     # Download chunk size in bytes (aiohttp default)
 }
