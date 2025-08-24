@@ -164,11 +164,17 @@ class ModelInstaller:
         
         for path in paths:
             try:
-                # Ensure the directory exists
-                os.makedirs(path, exist_ok=True)
+                # Find closest existing parent for storage check (no makedirs)
+                check_path = path
+                while not os.path.exists(check_path) and check_path != os.path.dirname(check_path):
+                    check_path = os.path.dirname(check_path)
                 
-                # Get free disk space
-                free_bytes = shutil.disk_usage(path).free
+                if not os.path.exists(check_path):
+                    logging.warning(f"[Model Installer] Cannot find existing parent directory for {path}")
+                    continue
+                
+                # Get free disk space from existing parent
+                free_bytes = shutil.disk_usage(check_path).free
                 free_gb = free_bytes / (1024**3)  # Convert to GB for logging
                 
                 logging.debug(f"[Model Installer] Path '{path}' has {free_gb:.1f} GB free")
@@ -294,44 +300,44 @@ class ModelInstaller:
         logging.info(f"[Model Installer] download: requesting url={url} -> {dest_path}")
         
         try:
-            headers = {}
-            if self._is_hf_url(url):
-                token = self._get_hf_token()
-                if token:
-                    headers["Authorization"] = f"Bearer {token}"
+        headers = {}
+        if self._is_hf_url(url):
+            token = self._get_hf_token()
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
             
-            # Try to prefetch expected bytes for progress tracking
-            try:
-                expected = await self._expected_size_http(url, headers or None)
-                if expected > 0:
-                    self._active_downloads[dest_path] = expected
-                    logging.info(f"[Model Installer] download: expected_size={expected} bytes")
+        # Try to prefetch expected bytes for progress tracking
+        try:
+            expected = await self._expected_size_http(url, headers or None)
+            if expected > 0:
+                self._active_downloads[dest_path] = expected
+                logging.info(f"[Model Installer] download: expected_size={expected} bytes")
             except Exception as e:
                 logging.debug(f"[Model Installer] download: could not get expected size: {e}")
             
             sess = self._get_download_session()
-            async with sess.get(url, headers=headers or None) as resp:
-                resp.raise_for_status()
+        async with sess.get(url, headers=headers or None) as resp:
+            resp.raise_for_status()
                 
-                if dest_path not in self._active_downloads:
-                    cl = int(resp.headers.get("Content-Length", 0))
-                    if cl:
-                        self._active_downloads[dest_path] = cl
+            if dest_path not in self._active_downloads:
+                cl = int(resp.headers.get("Content-Length", 0))
+                if cl:
+                    self._active_downloads[dest_path] = cl
                 
-                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-                total = 0
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            total = 0
                 
-                with open(dest_path, "wb") as f:
+            with open(dest_path, "wb") as f:
                     # Use configured chunk size
                     config = get_download_config()
                     async for chunk in resp.content.iter_chunked(config["chunk_size"]):
-                        if chunk:
-                            f.write(chunk)
-                            total += len(chunk)
+                    if chunk:
+                        f.write(chunk)
+                        total += len(chunk)
                 
-                logging.info(f"[Model Installer] download: completed bytes={total}")
-                self._active_downloads.pop(dest_path, None)
-                return total
+            logging.info(f"[Model Installer] download: completed bytes={total}")
+            self._active_downloads.pop(dest_path, None)
+            return total
                 
         except (asyncio.TimeoutError, aiohttp.ConnectionTimeoutError):
             config = get_download_config()
@@ -553,7 +559,15 @@ class ModelInstaller:
         
         # Check available storage
         try:
-            available_space = shutil.disk_usage(path).free
+            # Find closest existing parent for storage check (no makedirs)
+            check_path = path
+            while not os.path.exists(check_path) and check_path != os.path.dirname(check_path):
+                check_path = os.path.dirname(check_path)
+            
+            if not os.path.exists(check_path):
+                return False, f"Cannot find existing parent directory for {path}"
+            
+            available_space = shutil.disk_usage(check_path).free
             if expected_size > 0 and expected_size > available_space:
                 gb_needed = expected_size / (1024**3)
                 gb_available = available_space / (1024**3)
@@ -649,7 +663,7 @@ class ModelInstaller:
                     if models_found > 0:
                         logging.debug(f"[Model Installer] Found {models_found} models in {json_file.name}")
                         
-                except Exception as e:
+        except Exception as e:
                     logging.warning(f"[Model Installer] Failed to parse workflow {json_file.name}: {e}")
             
         except ImportError:
