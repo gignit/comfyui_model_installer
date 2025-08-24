@@ -66,20 +66,38 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
         url = normalizeDownloadUrl(url);
 
         const container = document.createElement('div');
-        container.className = 'model-install-buttons flex gap-2 flex-col';
-        
-        // Path selector dropdown (hidden by default)
-        const pathSelector = document.createElement('select');
-        pathSelector.className = 'p-dropdown p-component p-inputtext p-inputtext-sm';
-        pathSelector.style.display = 'none';
+        container.className = 'model-install-buttons flex gap-1 flex-row items-center';
         
         // Install button
         const btn = document.createElement('button');
         btn.className = 'p-button p-component p-button-outlined p-button-sm';
         btn.textContent = '...';
         
-        container.appendChild(pathSelector);
+        // Wrapper for the folder icon and the transparent select element
+        const folderWrapper = document.createElement('div');
+        folderWrapper.style.position = 'relative';
+        folderWrapper.style.display = 'inline-flex';
+        folderWrapper.title = 'Select download path';
+
+        // Folder button (visual only, not interactive)
+        const folderBtn = document.createElement('button');
+        folderBtn.className = 'p-button p-component p-button-icon-only p-button-outlined p-button-sm';
+        folderBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-folder"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>`;
+        folderBtn.setAttribute('tabindex', '-1'); // Make it non-focusable
+
+        // The <select> element, styled as an invisible overlay
+        const pathSelector = document.createElement('select');
+        pathSelector.title = 'Select download path'; // Proper accessibility
+        pathSelector.style.position = 'absolute';
+        pathSelector.style.inset = '0';
+        pathSelector.style.opacity = '0';
+        pathSelector.style.cursor = 'pointer';
+
+        folderWrapper.appendChild(folderBtn);
+        folderWrapper.appendChild(pathSelector);
+        
         container.appendChild(btn);
+        container.appendChild(folderWrapper);
         row.appendChild(container);
         // button injected
 
@@ -95,14 +113,12 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
         };
 
         const setLabel = (installed) => {
-          // Simple approach: show Uninstall button, let server handle the 403 error
           btn.textContent = installed ? 'Uninstall' : 'Install';
           resetButtonStyle();
         };
 
         const query = async () => {
           try {
-            // Initialize path selector if we have model info
             let qs = '';
             if (directory && filename) {
               qs = `directory=${encodeURIComponent(directory)}&filename=${encodeURIComponent(filename)}`;
@@ -112,62 +128,61 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
             const res = await fetch(`/models/status?${qs}`);
             const js = await res.json();
             
-            // Update path selector with storage info from status response (when model not found)
             if (directory && filename) {
-              updatePathSelector(pathSelector, directory, js.storage_info);
+              updatePathSelector(pathSelector, folderBtn, directory, js.storage_info);
             }
             
             if (js.state === 'downloading') {
               btn.textContent = 'Downloading…';
               btn.disabled = true;
-              pathSelector.disabled = true; // Disable during download
+              pathSelector.disabled = true;
+              folderBtn.disabled = true;
             } else if (js.state === 'failed') {
               btn.textContent = 'Retry Install';
               btn.disabled = false;
               btn.style.backgroundColor = '#ff6b6b';
               btn.style.color = 'white';
               btn.title = `Download failed: ${js.error || 'Unknown error'}. Click to retry.`;
-              pathSelector.disabled = false; // Allow path selection for retry
+              // Enable/disable based on path availability
+              const isDisabled = (pathSelector.options.length <= 1);
+              pathSelector.disabled = isDisabled;
+              folderBtn.disabled = isDisabled;
             } else {
               setLabel(!!js.present);
               btn.disabled = false;
-              btn.style.backgroundColor = ''; // Reset background
-              btn.style.color = ''; // Reset color
-              btn.title = ''; // Clear error tooltip
-              pathSelector.disabled = false; // Re-enable after download
+              btn.style.backgroundColor = '';
+              btn.style.color = '';
+              btn.title = '';
+              const isDisabled = (pathSelector.options.length <= 1);
+              pathSelector.disabled = isDisabled;
+              folderBtn.disabled = isDisabled;
             }
+
             btn.onclick = async () => {
-              // Decide intent from current label to avoid stale js.present when file exists but is downloading
               const installing = (btn.textContent || '').trim().toLowerCase() !== 'uninstall';
               console.debug('[Model Installer] click', { installing, directory, filename, url });
               try {
                 const ep = js.present ? '/models/uninstall' : '/models/install';
                 let body = {};
                 if (js.present) {
-                  // Uninstall: use existing format
                   body = { directory: js.folder, name: (js.path || '').split(/[\\/]/).pop() };
                 } else if (url && directory && filename) {
-                  // Install: use new structured format
                   body = { 
                     name: filename,
                     directory: directory, 
-                    url: normalizeDownloadUrl(url)
+                    url: normalizeDownloadUrl(url),
+                    path: pathSelector.value // Always include selected path
                   };
-                  
-                  // Add user-selected path if dropdown is visible and has selection
-                  if (pathSelector.style.display !== 'none' && pathSelector.value) {
-                    body.path = pathSelector.value;
-                  }
                 } else {
                   throw new Error('Insufficient information to install');
                 }
 
                 if (installing) {
-                  // Show "Initiating..." while waiting for server response
                   btn.textContent = 'Initiating...';
                   btn.disabled = true;
-                  resetButtonStyle(); // Clear any error styling
-                  pathSelector.disabled = true; // Disable path selector during install
+                  resetButtonStyle();
+                  pathSelector.disabled = true;
+                  folderBtn.disabled = true;
                 } else {
                   setBusy(true);
                 }
@@ -177,34 +192,26 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
                 console.debug('[Model Installer] POST result', { status: r.status, jr });
 
                 if (!r.ok) {
-                  // Handle HF auth flow
                   if (r.status === 401 && jr && jr.error_code === 'auth_required') {
                     const token = await openHfTokenDialog();
                     if (token && token.trim().length > 0) {
                       const lr = await fetch('/auth/hf_login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: token.trim() }) });
-                      const lj = await lr.json().catch(() => ({}));
-                      if (lr.ok) {
-                        // Retry install once after successful login
+                      if ((await lr.json().catch(() => ({}))).ok) {
                         const rr = await fetch(ep, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
                         const rj = await rr.json().catch(() => ({}));
-                        console.debug('[Model Installer] POST retry result', { status: rr.status, rj });
-                        if (!rr.ok) {
-                          throw new Error(rj.error || 'operation failed');
-                        }
-                        // Server accepted: set downloading state and start progress immediately
+                        if (!rr.ok) throw new Error(rj.error || 'operation failed');
+                        
                         btn.textContent = 'Downloading…';
                         btn.disabled = true;
                         const key = `${directory}/${filename}`;
-                        console.debug('[Model Installer] progress start (after login)', { key });
-                        startDownloadProgress({ directory, filename, url, expected: 0, onComplete: async () => { console.debug('[Model Installer] onComplete', { key }); await query(); } });
+                        startDownloadProgress({ directory, filename, url, expected: 0, onComplete: async () => await query() });
                         (async () => {
                           const exp = url ? await fetchExpected(url) : 0;
-                          console.debug('[Model Installer] expected updated (after login)', { key, exp });
                           updateDownloadExpected(key, exp);
                         })();
                         return;
                       } else {
-                        alert(lj.error || 'Login failed. Please run: hf auth login --token <token> --add-to-git-credential');
+                        alert('Login failed. Please run: hf auth login --token <token> --add-to-git-credential');
                       }
                     } else {
                       alert('A Hugging Face access token is required. Visit https://huggingface.co/settings/tokens');
@@ -212,31 +219,28 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
                   } else {
                     alert(jr.error || 'operation failed');
                   }
-                  // Show failed state on error
+
                   if (installing) {
-                    btn.textContent = 'Failed to Initiate Download';
+                    btn.textContent = 'Retry Install';
                     btn.disabled = false;
                     btn.style.backgroundColor = '#ff6b6b';
                     btn.style.color = 'white';
                     btn.title = `Failed to start download: ${jr.error || 'Unknown error'}. Click to retry.`;
-                    pathSelector.disabled = false; // Re-enable path selector on error
+                    const isDisabled = pathSelector.options.length <= 1;
+                    pathSelector.disabled = isDisabled;
+                    folderBtn.disabled = isDisabled;
                   } else {
                     setBusy(false);
                   }
                   return;
                 }
 
-                // Server accepted: start progress for install
                 if (installing) {
-                  // Show downloading state immediately after server accepts
                   btn.textContent = 'Downloading…';
-                  // Create panel immediately, then fetch expected asynchronously and update
                   const key = `${directory}/${filename}`;
-                  console.debug('[Model Installer] progress start', { key });
-                  startDownloadProgress({ directory, filename, url, expected: 0, onComplete: async () => { console.debug('[Model Installer] onComplete', { key }); await query(); } });
+                  startDownloadProgress({ directory, filename, url, expected: 0, onComplete: async () => await query() });
                   (async () => {
                     const exp = url ? await fetchExpected(url) : 0;
-                    console.debug('[Model Installer] expected updated', { key, exp });
                     updateDownloadExpected(key, exp);
                   })();
                 } else {
@@ -245,13 +249,14 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
               } catch (e) {
                 alert(e.message || String(e));
                 if (installing) {
-                  // Show failed state for unexpected errors during install
-                  btn.textContent = 'Failed to Initiate Download';
+                  btn.textContent = 'Retry Install';
                   btn.disabled = false;
                   btn.style.backgroundColor = '#ff6b6b';
                   btn.style.color = 'white';
                   btn.title = `Failed to start download: ${e.message || String(e)}. Click to retry.`;
-                  pathSelector.disabled = false; // Re-enable path selector on error
+                  const isDisabled = pathSelector.options.length <= 1;
+                  pathSelector.disabled = isDisabled;
+                  folderBtn.disabled = isDisabled;
                 } else {
                   setBusy(false);
                 }
@@ -299,24 +304,25 @@ function formatGB(bytes) {
 }
 
 // Update path selector with available paths for specific folder type
-function updatePathSelector(pathSelector, directory, storageInfo) {
-  // Use storage info from status response (when model not found) or from health check
+function updatePathSelector(pathSelector, folderBtn, directory, storageInfo) {
   const storage = storageInfo || {};
-  const paths = storage[directory] || [];  // Use directory as folder_name
+  const paths = storage[directory] || [];
   
-  if (paths.length > 1) {
-    pathSelector.innerHTML = '';
-    paths.forEach((pathInfo, index) => {
-      const option = document.createElement('option');
-      option.value = pathInfo.path;
-      option.textContent = `${pathInfo.path} (${formatGB(pathInfo.available_bytes)} GB free)`;
-      if (index === 0) option.selected = true; // Auto-select best (most space)
-      pathSelector.appendChild(option);
-    });
-    pathSelector.style.display = 'block';
-  } else {
-    pathSelector.style.display = 'none';
+  pathSelector.innerHTML = '';
+  if (paths.length > 0) {
+      paths.forEach((pathInfo, index) => {
+        const option = document.createElement('option');
+        option.value = pathInfo.path;
+        option.textContent = `${pathInfo.path} (${formatGB(pathInfo.available_bytes)} GB free)`;
+        if (index === 0) option.selected = true;
+        pathSelector.appendChild(option);
+      });
   }
+
+  const isDisabled = paths.length <= 1;
+  pathSelector.disabled = isDisabled;
+  folderBtn.disabled = isDisabled; // Visually disable the button underneath
+  pathSelector.style.cursor = isDisabled ? 'not-allowed' : 'pointer';
 }
 
 function openHfTokenDialog() {
