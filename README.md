@@ -8,6 +8,7 @@ Automatically installs missing model files from workflow templates with Install/
 - **One-Click Installation**: Install missing models directly from the Missing Models dialog
 - **Smart Directory Detection**: Automatically determines correct installation directories
 - **Multi-Path Support**: Downloads files to path with most available storage (v1.1.2 - requested by BrknSoul)
+- **Enhanced Proxy Support**: Robust proxy detection and timeout handling (v1.1.4)
 - **Progress Tracking**: Real-time download progress with speed, ETA, and completion percentage
 - **Hugging Face Support**: Seamless authentication for gated models
 - **Multiple Sources**: Supports Hugging Face, Civitai, and direct download URLs
@@ -90,6 +91,31 @@ The uninstall feature is disabled by default. To enable it, modify the configura
 
 When disabled, the client will still be presented with a button that indicates 'uninstall' but clicking this will gracefully fail indicating the feature is disabled.
 
+### Download Configuration (v1.1.4)
+Advanced users can customize download behavior by editing `config.py`:
+
+```python
+DOWNLOAD_CONFIG = {
+    # Timeout settings
+    "timeout_connect": 30,    # Connection timeout in seconds
+    "timeout_total": None,    # Total timeout (None = unlimited)
+    
+    # Connection pool settings (aiohttp TCPConnector parameters)
+    "limit": 100,             # Max total connections
+    "limit_per_host": 30,     # Max connections per host
+    "ttl_dns_cache": 10,      # DNS cache TTL in seconds
+    "use_dns_cache": True,    # Enable DNS caching
+    
+    # Download settings
+    "chunk_size": 8192,       # Download chunk size in bytes
+}
+```
+
+**Performance Tuning Examples:**
+- **High-performance**: Increase `limit`, `limit_per_host`, and `chunk_size`
+- **Corporate/restricted**: Decrease connection limits, shorter DNS cache
+- **Memory-constrained**: Reduce `chunk_size` and connection limits
+
 ## Troubleshooting
 
 ### Install buttons not visible
@@ -102,9 +128,20 @@ When disabled, the client will still be presented with a button that indicates '
 - Check ComfyUI logs for error messages
 - For Hugging Face models, ensure you have a valid token
 
+### Connection timeouts or proxy issues (v1.1.4)
+- **"Failed to Initiate Download"**: Check proxy settings and network connectivity
+- **Corporate networks**: Verify `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` environment variables
+- **Slow connections**: Increase `timeout_connect` in `config.py`
+- **Check logs**: Look for "Using proxy settings" messages in ComfyUI console
+
 ### Permission errors
 - Ensure ComfyUI has write permissions to model directories
 - Check available disk space
+
+### Performance issues
+- **Slow downloads**: Increase `chunk_size` and connection limits in `config.py`
+- **Memory usage**: Decrease `chunk_size` and `limit` settings
+- **Corporate restrictions**: Reduce `limit_per_host` to be more server-friendly
 
 ## Security
 
@@ -113,9 +150,9 @@ When disabled, the client will still be presented with a button that indicates '
 - **Path Protection**: Prevents directory traversal attacks with safe path joining
 - **Secure Authentication**: Hugging Face tokens stored using standard `huggingface_hub` library
 
-## Proxy Support
+## Proxy Support (Enhanced in v1.1.4)
 
-The model installer automatically uses the same proxy settings as ComfyUI. If you need to configure proxy settings for your environment:
+The model installer automatically detects and uses proxy settings from environment variables. This works independently of ComfyUI's proxy configuration and includes robust timeout handling and error feedback.
 
 ### Environment Variables
 Set these environment variables before starting ComfyUI:
@@ -129,6 +166,12 @@ export HTTPS_PROXY=http://proxy.company.com:8080
 export HTTP_PROXY=http://username:password@proxy.company.com:8080
 export HTTPS_PROXY=http://username:password@proxy.company.com:8080
 
+# For SOCKS proxies (supports all protocols)
+export ALL_PROXY=socks5://127.0.0.1:7890
+
+# Mixed proxy setup example (supports both cases)
+export https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890 all_proxy=socks5://127.0.0.1:7890
+
 # Exclude local addresses from proxy
 export NO_PROXY=localhost,127.0.0.1,.local
 
@@ -140,10 +183,24 @@ python main.py --listen 0.0.0.0 --port 8189
 ```cmd
 set HTTP_PROXY=http://proxy.company.com:8080
 set HTTPS_PROXY=http://proxy.company.com:8080
+set ALL_PROXY=socks5://127.0.0.1:7890
 python main.py --listen 0.0.0.0 --port 8189
 ```
 
-The model installer uses the same HTTP client as ComfyUI's registry downloads, so if ComfyUI can fetch updates and registry data, model downloads will work through the same proxy configuration.
+### Download Behavior (v1.1.4 Improvements)
+- **Fast failure detection**: 30 seconds to establish connection (configurable)
+- **No download timeout**: Large model files can take hours without interruption
+- **Immediate error feedback**: "Failed to Initiate Download" appears instantly on connection issues
+- **Smart retry system**: "Retry Install" button for failed downloads with error details
+- **Comprehensive proxy support**: HTTP, HTTPS, SOCKS5, and mixed configurations
+- **Configurable connection pooling**: Optimized for corporate and high-performance environments
+
+### Button States
+- **"Install"** → **"Initiating..."** → **"Downloading..."** (success)
+- **"Install"** → **"Initiating..."** → **"Failed to Initiate Download"** (connection timeout/proxy issues)
+- **"Downloading..."** → **"Retry Install"** (download failure during progress)
+
+The model installer uses its own HTTP client with configurable settings for optimal performance in any network environment, including corporate proxies and restricted networks.
 
 ## License
 

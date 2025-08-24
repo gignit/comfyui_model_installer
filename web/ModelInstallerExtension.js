@@ -88,9 +88,16 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
           btn.classList.toggle('p-disabled', busy);
         };
 
+        const resetButtonStyle = () => {
+          btn.style.backgroundColor = '';
+          btn.style.color = '';
+          btn.title = '';
+        };
+
         const setLabel = (installed) => {
           // Simple approach: show Uninstall button, let server handle the 403 error
           btn.textContent = installed ? 'Uninstall' : 'Install';
+          resetButtonStyle();
         };
 
         const query = async () => {
@@ -114,9 +121,19 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
               btn.textContent = 'Downloading…';
               btn.disabled = true;
               pathSelector.disabled = true; // Disable during download
+            } else if (js.state === 'failed') {
+              btn.textContent = 'Retry Install';
+              btn.disabled = false;
+              btn.style.backgroundColor = '#ff6b6b';
+              btn.style.color = 'white';
+              btn.title = `Download failed: ${js.error || 'Unknown error'}. Click to retry.`;
+              pathSelector.disabled = false; // Allow path selection for retry
             } else {
               setLabel(!!js.present);
               btn.disabled = false;
+              btn.style.backgroundColor = ''; // Reset background
+              btn.style.color = ''; // Reset color
+              btn.title = ''; // Clear error tooltip
               pathSelector.disabled = false; // Re-enable after download
             }
             btn.onclick = async () => {
@@ -146,9 +163,10 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
                 }
 
                 if (installing) {
-                  // Disable immediately; only show progress after server accepts
-                  btn.textContent = 'Downloading…';
+                  // Show "Initiating..." while waiting for server response
+                  btn.textContent = 'Initiating...';
                   btn.disabled = true;
+                  resetButtonStyle(); // Clear any error styling
                   pathSelector.disabled = true; // Disable path selector during install
                 } else {
                   setBusy(true);
@@ -194,10 +212,13 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
                   } else {
                     alert(jr.error || 'operation failed');
                   }
-                  // Reset UI on failure
+                  // Show failed state on error
                   if (installing) {
-                    btn.textContent = 'Install';
+                    btn.textContent = 'Failed to Initiate Download';
                     btn.disabled = false;
+                    btn.style.backgroundColor = '#ff6b6b';
+                    btn.style.color = 'white';
+                    btn.title = `Failed to start download: ${jr.error || 'Unknown error'}. Click to retry.`;
                     pathSelector.disabled = false; // Re-enable path selector on error
                   } else {
                     setBusy(false);
@@ -207,6 +228,8 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
 
                 // Server accepted: start progress for install
                 if (installing) {
+                  // Show downloading state immediately after server accepts
+                  btn.textContent = 'Downloading…';
                   // Create panel immediately, then fetch expected asynchronously and update
                   const key = `${directory}/${filename}`;
                   console.debug('[Model Installer] progress start', { key });
@@ -222,8 +245,12 @@ if (appRef && typeof appRef.registerExtension === 'function') appRef.registerExt
               } catch (e) {
                 alert(e.message || String(e));
                 if (installing) {
-                  btn.textContent = 'Install';
+                  // Show failed state for unexpected errors during install
+                  btn.textContent = 'Failed to Initiate Download';
                   btn.disabled = false;
+                  btn.style.backgroundColor = '#ff6b6b';
+                  btn.style.color = 'white';
+                  btn.title = `Failed to start download: ${e.message || String(e)}. Click to retry.`;
                   pathSelector.disabled = false; // Re-enable path selector on error
                 } else {
                   setBusy(false);

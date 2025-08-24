@@ -12,9 +12,7 @@ import json
 from pathlib import Path
 
 import folder_paths
-
-
-# URL parsing function removed - client now provides structured requests
+from .config import get_download_config
 
 
 class ModelInstaller:
@@ -24,20 +22,64 @@ class ModelInstaller:
         # Lazy accessor because the aiohttp ClientSession is created after server init
         self._get_client_session = get_client_session
         self._active_downloads: dict[str, int] = {}
+        self._download_failures: dict[str, str] = {}  # dest_path -> error_message
+        self._download_session: Optional[aiohttp.ClientSession] = None
         
         # Workflow validation system
         self._workflow_index: Optional[Dict] = None
         self._index_file = Path(__file__).parent / "workflow_model_index.json"
         self._index_loaded_this_session = False
 
-    @staticmethod
-    def get_primary_folder_path(folder_name: str) -> str | None:
-        """Get the primary path for a folder name from ComfyUI's folder_paths."""
-        entry = folder_paths.folder_names_and_paths.get(folder_name)
-        if not entry:
-            return None
-        paths = entry[0]
-        return paths[0] if paths else None
+    def _get_download_session(self) -> aiohttp.ClientSession:
+        """Get or create a properly configured download session with timeouts and proxy support."""
+        if self._download_session is None or self._download_session.closed:
+            # Get configuration
+            config = get_download_config()
+            
+            # Create timeout configuration
+            timeout = aiohttp.ClientTimeout(
+                total=config["timeout_total"],  # None = no total timeout for large files
+                connect=config["timeout_connect"]
+            )
+            
+            # Check for proxy environment variables (support both cases and all_proxy)
+            http_proxy = os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy')
+            https_proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy')
+            all_proxy = os.environ.get('ALL_PROXY') or os.environ.get('all_proxy')
+            
+            # Log detected proxy settings
+            proxy_info = []
+            if http_proxy:
+                proxy_info.append(f"HTTP={http_proxy}")
+            if https_proxy:
+                proxy_info.append(f"HTTPS={https_proxy}")
+            if all_proxy:
+                proxy_info.append(f"ALL={all_proxy}")
+            
+            if proxy_info:
+                logging.info(f"[Model Installer] Using proxy settings: {', '.join(proxy_info)}")
+            
+            # Create connector with configured settings - extract only TCPConnector parameters
+            connector_params = {k: v for k, v in config.items() 
+                              if k in ['limit', 'limit_per_host', 'ttl_dns_cache', 'use_dns_cache']}
+            connector = aiohttp.TCPConnector(**connector_params)
+            
+            # Create session with timeout and connector (use aiohttp default user-agent)
+            self._download_session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=connector
+                # No custom headers - let aiohttp use its default user-agent
+            )
+            
+        return self._download_session
+
+    async def cleanup(self):
+        """Clean up resources (close download session)."""
+        if self._download_session and not self._download_session.closed:
+            await self._download_session.close()
+            self._download_session = None
+
+
 
     @staticmethod
     def get_model_paths() -> Dict[str, tuple[list[str], set[str]]]:
@@ -245,7 +287,7 @@ class ModelInstaller:
         if token:
             headers["Authorization"] = f"Bearer {token}"
         try:
-            sess = self._get_client_session()
+            sess = self._get_download_session()
             async with sess.head(url, headers=headers or None) as resp:
                 if resp.status in (401, 403):
                     return False
@@ -266,36 +308,84 @@ class ModelInstaller:
     async def download(self, url: str, dest_path: str) -> int:
         """Download a file from URL to destination path."""
         logging.info(f"[Model Installer] download: requesting url={url} -> {dest_path}")
-        headers = {}
-        if self._is_hf_url(url):
-            token = self._get_hf_token()
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
-        # Try to prefetch expected bytes for progress tracking
+        
         try:
-            expected = await self._expected_size_http(url, headers or None)
-            if expected > 0:
-                self._active_downloads[dest_path] = expected
-                logging.info(f"[Model Installer] download: expected_size={expected} bytes")
-        except Exception:
-            pass
-        sess = self._get_client_session()
-        async with sess.get(url, headers=headers or None) as resp:
-            resp.raise_for_status()
-            if dest_path not in self._active_downloads:
-                cl = int(resp.headers.get("Content-Length", 0))
-                if cl:
-                    self._active_downloads[dest_path] = cl
-            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-            total = 0
-            with open(dest_path, "wb") as f:
-                async for chunk in resp.content.iter_chunked(1024 * 256):
-                    if chunk:
-                        f.write(chunk)
-                        total += len(chunk)
-            logging.info(f"[Model Installer] download: completed bytes={total}")
+            headers = {}
+            if self._is_hf_url(url):
+                token = self._get_hf_token()
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+            
+            # Try to prefetch expected bytes for progress tracking
+            try:
+                expected = await self._expected_size_http(url, headers or None)
+                if expected > 0:
+                    self._active_downloads[dest_path] = expected
+                    logging.info(f"[Model Installer] download: expected_size={expected} bytes")
+            except Exception as e:
+                logging.debug(f"[Model Installer] download: could not get expected size: {e}")
+            
+            sess = self._get_download_session()
+            async with sess.get(url, headers=headers or None) as resp:
+                resp.raise_for_status()
+                
+                if dest_path not in self._active_downloads:
+                    cl = int(resp.headers.get("Content-Length", 0))
+                    if cl:
+                        self._active_downloads[dest_path] = cl
+                
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                total = 0
+                
+                with open(dest_path, "wb") as f:
+                    # Use configured chunk size
+                    config = get_download_config()
+                    async for chunk in resp.content.iter_chunked(config["chunk_size"]):
+                        if chunk:
+                            f.write(chunk)
+                            total += len(chunk)
+                
+                logging.info(f"[Model Installer] download: completed bytes={total}")
+                self._active_downloads.pop(dest_path, None)
+                return total
+                
+        except (asyncio.TimeoutError, aiohttp.ConnectionTimeoutError):
+            config = get_download_config()
+            timeout_msg = f"{config['timeout_connect']}s connection timeout" if config['timeout_total'] is None else f"{config['timeout_total']}s total timeout"
+            error_msg = f"Download timeout: {timeout_msg}"
+            logging.error(f"[Model Installer] download failed: {error_msg} for {url}")
             self._active_downloads.pop(dest_path, None)
-            return total
+            # Clean up partial file
+            if os.path.exists(dest_path):
+                try:
+                    os.remove(dest_path)
+                except Exception:
+                    pass
+            raise Exception(error_msg)  # Use simple Exception instead of ClientResponseError
+            
+        except aiohttp.ClientConnectorError as e:
+            error_msg = f"Connection failed: {str(e)}"
+            logging.error(f"[Model Installer] download failed: {error_msg} for {url}")
+            self._active_downloads.pop(dest_path, None)
+            # Clean up partial file
+            if os.path.exists(dest_path):
+                try:
+                    os.remove(dest_path)
+                except Exception:
+                    pass
+            raise Exception(error_msg)  # Use simple Exception instead of ClientResponseError
+            
+        except Exception as e:
+            error_msg = f"Download failed: {str(e)}"
+            logging.error(f"[Model Installer] download failed: {error_msg} for {url}")
+            self._active_downloads.pop(dest_path, None)
+            # Clean up partial file
+            if os.path.exists(dest_path):
+                try:
+                    os.remove(dest_path)
+                except Exception:
+                    pass
+            raise
 
     def _is_hf_url(self, url: str) -> bool:
         """Check if URL is from Hugging Face."""
@@ -353,6 +443,18 @@ class ModelInstaller:
     def active_expected(self, dest_path: str) -> int:
         """Get expected size for an active download."""
         return self._active_downloads.get(dest_path, 0)
+    
+    def get_download_failure(self, dest_path: str) -> Optional[str]:
+        """Get error message for a failed download."""
+        return self._download_failures.get(dest_path)
+    
+    def clear_download_failure(self, dest_path: str) -> None:
+        """Clear error message for a download (for retry)."""
+        self._download_failures.pop(dest_path, None)
+    
+    def clear_all_download_failures(self) -> None:
+        """Clear all download failure messages."""
+        self._download_failures.clear()
 
     def _get_hf_token(self) -> str | None:
         """Get Hugging Face token from standard location."""
@@ -365,7 +467,7 @@ class ModelInstaller:
     async def _expected_size_http(self, url: str, headers: dict | None) -> int:
         """Get expected file size via HTTP HEAD or range request."""
         try:
-            sess = self._get_client_session()
+            sess = self._get_download_session()
             async with sess.head(url, headers=headers or None) as resp:
                 if resp.status // 100 == 2:
                     cl = resp.headers.get("Content-Length")
@@ -380,16 +482,35 @@ class ModelInstaller:
                     total = cr.split("/")[-1]
                     if total.isdigit():
                         return int(total)
+        except (asyncio.TimeoutError, aiohttp.ConnectionTimeoutError):
+            # Let timeout exceptions propagate to caller for proper error handling
+            raise
         except Exception as e:
             logging.warning(f"[Model Installer] expected_size error: {e}")
         return 0
 
     def queue_download(self, url: str, dest_path: str) -> None:
         """Start the download in the background."""
+        # Clear any previous failure for retry
+        self.clear_download_failure(dest_path)
+        
+        async def download_task():
+            try:
+                await self.download(url, dest_path)
+                logging.info(f"[Model Installer] download completed successfully: {dest_path}")
+            except Exception as e:
+                error_msg = str(e)
+                if hasattr(e, 'message'):
+                    error_msg = e.message
+                self._download_failures[dest_path] = error_msg
+                logging.error(f"[Model Installer] download failed: {error_msg} for {dest_path}")
+        
         try:
-            asyncio.create_task(self.download(url, dest_path))
+            asyncio.create_task(download_task())
         except Exception as e:
-            logging.warning(f"[Model Installer] failed to queue download: {e}")
+            error_msg = f"Failed to queue download: {e}"
+            self._download_failures[dest_path] = error_msg
+            logging.warning(f"[Model Installer] {error_msg}")
 
     # Workflow validation methods
     def validate_model_request(self, url: str, directory: str, filename: str) -> bool:
@@ -562,7 +683,6 @@ class ModelInstaller:
                 "workflows": list(data["workflows"])
             }
 
-        # Save index to disk
         try:
             with open(self._index_file, 'w', encoding='utf-8') as f:
                 json.dump(serializable_index, f, indent=2)

@@ -3,6 +3,7 @@
 import os
 import urllib
 import logging
+import asyncio
 from aiohttp import web
 import aiohttp
 from server import PromptServer
@@ -85,6 +86,28 @@ def register_routes():
                 "path": model_path
             })
         else:
+            # Model not found - check if there's a download failure
+            # Try to construct the expected download path to check for failures
+            try:
+                # Check all possible paths for this folder type for download failures
+                paths = installer.get_model_paths(folder_name)
+                for path_info in paths:
+                    expected_dest = ModelInstaller.safe_join(path_info["path"], filename)
+                    failure_msg = installer.get_download_failure(expected_dest)
+                    if failure_msg:
+                        logging.debug(f"[Model Installer] status: folder={folder_name} filename={filename} present=False state=failed")
+                        return web.json_response({
+                            "present": False,
+                            "size": 0,
+                            "expected": 0,
+                            "state": "failed",
+                            "folder": folder_name,
+                            "error": failure_msg,
+                            "storage_info": ModelInstaller.get_storage_info(folder_name)
+                        })
+            except Exception:
+                pass  # If we can't construct path, continue with normal absent response
+            
             # Model not found - return storage info for this folder type
             storage_info = ModelInstaller.get_storage_info(folder_name)
             logging.debug(f"[Model Installer] status: folder={folder_name} filename={filename} present=False")
@@ -127,8 +150,15 @@ def register_routes():
         # Get expected size for storage validation
         try:
             expected_size = await installer.expected_size(url)
-        except Exception:
-            expected_size = 0
+        except (asyncio.TimeoutError, aiohttp.ConnectionTimeoutError):
+            logging.error(f"[Model Installer] install: timeout getting file size for {url}")
+            return web.json_response({"error": "Connection timeout - unable to get file size. Check your network connection or proxy settings."}, status=408)
+        except aiohttp.ClientConnectorError as e:
+            logging.error(f"[Model Installer] install: connection failed getting file size for {url}: {e}")
+            return web.json_response({"error": f"Connection failed: {str(e)}. Check your network connection or proxy settings."}, status=503)
+        except Exception as e:
+            logging.warning(f"[Model Installer] install: could not get expected size for {url}: {e}")
+            expected_size = 0  # Continue without size validation
         
         # Path selection and validation
         if user_path:
@@ -162,27 +192,30 @@ def register_routes():
             logging.info(f"[Model Installer] install: starting folder={folder_name} name={name}")
             # For HF URLs, if token missing or unauthorized, return 401 early
             if installer._is_hf_url(url):
-                ok = await installer.check_auth(url)
-                if not ok:
-                    return web.json_response(
-                        {
-                            "error_code": "auth_required",
-                            "provider": "huggingface",
-                            "message": "Authentication required to download this file.",
-                            "cli_hint": "hf auth login --token <token> --add-to-git-credential",
-                        },
-                        status=401,
-                    )
+                try:
+                    ok = await installer.check_auth(url)
+                    if not ok:
+                        return web.json_response(
+                            {
+                                "error_code": "auth_required",
+                                "provider": "huggingface",
+                                "message": "Authentication required to download this file.",
+                                "cli_hint": "hf auth login --token <token> --add-to-git-credential",
+                            },
+                            status=401,
+                        )
+                except (asyncio.TimeoutError, aiohttp.ConnectionTimeoutError):
+                    logging.error(f"[Model Installer] install: timeout during auth check for {url}")
+                    return web.json_response({"error": "Connection timeout during authentication check. Check your network connection or proxy settings."}, status=408)
+                except aiohttp.ClientConnectorError as e:
+                    logging.error(f"[Model Installer] install: connection failed during auth check for {url}: {e}")
+                    return web.json_response({"error": f"Connection failed during authentication check: {str(e)}. Check your network connection or proxy settings."}, status=503)
             # Queue download asynchronously and return immediately
             installer.queue_download(url, dest)
-            # Initialize expected size for immediate UI progress if possible
-            try:
-                expected = await installer.expected_size(url)
-            except Exception:
-                expected = 0
-            if expected > 0:
-                installer._active_downloads[dest] = expected
-            return web.json_response({"status": "queued", "folder": folder_name, "path": dest, "expected": expected})
+            # Use the expected_size we already got (avoid second network call)
+            if expected_size > 0:
+                installer._active_downloads[dest] = expected_size
+            return web.json_response({"status": "queued", "folder": folder_name, "path": dest, "expected": expected_size})
         except aiohttp.ClientResponseError as cre:
             # Specific authentication handling for Hugging Face
             if cre.status in (401, 403) and "huggingface.co" in (url or ""):
