@@ -43,6 +43,62 @@ def get_primary_folder_path(folder_name: str) -> str | None:
     return paths[0] if paths else None
 
 
+def get_best_folder_path(folder_name: str) -> str | None:
+    """
+    Get the best path for a folder name, choosing the one with most free disk space.
+    
+    This function respects extra_model_paths.yaml by checking all available paths
+    for the given model type and selecting the one with the most available space.
+    
+    Args:
+        folder_name: The folder type (e.g., "checkpoints", "vae", "loras")
+        
+    Returns:
+        Path with most free space, or None if no valid paths found
+    """
+    import shutil
+    
+    entry = folder_paths.folder_names_and_paths.get(folder_name)
+    if not entry:
+        logging.warning(f"[Model Installer] No folder paths found for '{folder_name}'")
+        return None
+    
+    paths = entry[0]
+    if not paths:
+        logging.warning(f"[Model Installer] Empty path list for '{folder_name}'")
+        return None
+    
+    best_path = None
+    most_free = -1
+    
+    for path in paths:
+        try:
+            # Ensure the directory exists
+            os.makedirs(path, exist_ok=True)
+            
+            # Get free disk space
+            free_bytes = shutil.disk_usage(path).free
+            free_gb = free_bytes / (1024**3)  # Convert to GB for logging
+            
+            logging.debug(f"[Model Installer] Path '{path}' has {free_gb:.1f} GB free")
+            
+            if free_bytes > most_free:
+                best_path = path
+                most_free = free_bytes
+                
+        except Exception as e:
+            logging.warning(f"[Model Installer] Cannot access path '{path}': {e}")
+            continue
+    
+    if best_path:
+        free_gb = most_free / (1024**3)
+        logging.info(f"[Model Installer] Selected path '{best_path}' with {free_gb:.1f} GB free space")
+    else:
+        logging.error(f"[Model Installer] No accessible paths found for '{folder_name}'")
+    
+    return best_path
+
+
 def safe_join(base: str, filename: str) -> str:
     """Safely join base path and filename, preventing directory traversal."""
     dest = os.path.abspath(os.path.join(base, filename))

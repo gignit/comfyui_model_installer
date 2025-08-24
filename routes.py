@@ -10,7 +10,8 @@ from server import PromptServer
 from .model_installer import (
     ModelInstaller, 
     resolve_folder_name_from_url, 
-    get_primary_folder_path, 
+    get_primary_folder_path,
+    get_best_folder_path,
     safe_join
 )
 
@@ -56,7 +57,7 @@ def register_routes():
         folder_name = folder_hint or resolve_folder_name_from_url(url or "")
         if not folder_name:
             return web.json_response({"present": False, "reason": "unknown_folder"})
-        base = get_primary_folder_path(folder_name)
+        base = get_best_folder_path(folder_name)
         if not base:
             return web.json_response({"present": False, "reason": "missing_base_dir"})
         if not filename and url:
@@ -94,7 +95,7 @@ def register_routes():
         if not folder_name:
             logging.warning(f"[Model Installer] install: unknown folder for url={url}")
             return web.json_response({"error": "unknown_folder"}, status=400)
-        base = get_primary_folder_path(folder_name)
+        base = get_best_folder_path(folder_name)
         if not base:
             logging.warning(f"[Model Installer] install: missing base dir for folder={folder_name}")
             return web.json_response({"error": "missing_base_dir"}, status=400)
@@ -171,7 +172,7 @@ def register_routes():
             filename = os.path.basename(urllib.parse.urlparse(url).path)
         if not (folder_name and filename):
             return web.json_response({"error": "missing directory/filename"}, status=400)
-        base = get_primary_folder_path(folder_name)
+        base = get_best_folder_path(folder_name)
         if not base:
             return web.json_response({"error": "missing_base_dir"}, status=400)
         try:
